@@ -1,0 +1,1370 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Побег из бюрократии</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Crect width='8' height='8' fill='%232b3252'/%3E%3Crect x='2' y='1' width='4' height='3' fill='%23f8c8a0'/%3E%3Crect x='2' y='4' width='4' height='3' fill='%23f0f0f0'/%3E%3Crect x='3.5' y='4' width='1' height='3' fill='%23d83830'/%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0b10; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  .tv {
+    position: relative; padding: 28px 28px 46px; border-radius: 52px;
+    background: linear-gradient(#34343c, #16161b);
+    box-shadow: 0 0 0 4px #08080a, 0 24px 70px #000, inset 0 2px 3px #55555f, inset 0 -6px 14px #000;
+    transform-origin: center center;
+  }
+  .screen {
+    position: relative; width: 900px; height: 600px; border-radius: 30px; overflow: hidden;
+    background: #000; box-shadow: inset 0 0 50px #000, 0 0 0 3px #050507;
+  }
+  canvas { display: block; width: 900px; height: 600px; image-rendering: pixelated; }
+  .screen::after {
+    content: ""; position: absolute; inset: 0; pointer-events: none;
+    background:
+      radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%),
+      repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.2) 2px 3px);
+  }
+  .brand {
+    position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: bold 13px "Courier New", monospace; letter-spacing: 6px; color: #6a6a78;
+  }
+  .led { position: absolute; right: 44px; bottom: 16px; width: 10px; height: 10px; border-radius: 50%;
+    background: #3ae06a; box-shadow: 0 0 8px #3ae06a; }
+</style>
+</head>
+<body>
+<div class="tv" id="tv">
+  <div class="screen"><canvas id="c" width="900" height="600"></canvas></div>
+  <div class="brand">HORIZONT</div><div class="led"></div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+// ---------- Базовые константы (логический экран 300x200, масштаб x3 = 900x600) ----------
+const W = 300, H = 200, SCALE = 3;
+const FLOOR = 160;          // верхняя линия пола
+const WORLD = 4800;         // длина коридора
+const ZW = WORLD / 4;       // ширина одной зоны
+const GOAL = WORLD - 46;    // x лифта
+const BOSS_ZONE = WORLD - 300 - 30 - 90;   // случайные препятствия идут почти до самой арены (она начинается на 90 px дальше)
+const MAX_LIVES = 3;
+
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+
+// ---------- Палитра (ограниченная, как у приставки) ----------
+const PAL = {
+  K: '#101020', W: '#f0f0f0', G: '#8a8a9a', D: '#40405a', R: '#d83830', O: '#f08a28',
+  Y: '#f8d838', B: '#2c58c8', L: '#68b8f8', N: '#8a5a2a', S: '#f8c8a0', E: '#38a848',
+  P: '#f890b8', T: '#20a0a0'
+};
+
+// ---------- Пиксельные спрайты ----------
+function makeSprite(rows, over, flip) {
+  const pal = Object.assign({}, PAL, over || {});
+  const w = Math.max(...rows.map(r => r.length)), h = rows.length;
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const x = c.getContext('2d');
+  rows.forEach((r, j) => {
+    let row = r.padEnd(w, '.');
+    if (flip) row = row.split('').reverse().join('');
+    for (let i = 0; i < w; i++) {
+      const ch = row[i];
+      if (ch === '.') continue;
+      x.fillStyle = pal[ch] || '#f0f';
+      x.fillRect(i, j, 1, 1);
+    }
+  });
+  return c;
+}
+
+const HEAD = [
+  '..KKKK..',
+  '.KNNNNK.',
+  '.KSSSSK.',
+  '.KSSKSK.',
+  '..KSSK..',
+  '.KWWWWK.',
+  'KWWRRWWK',
+  'KWWRRWWK',
+  'KSWRRWSK',
+  '.KWWWWK.',
+  '.KBBBBK.'
+];
+const LEGS_A = ['.KBKKBK.', 'KBK..KBK', 'KKK..KKK'];
+const LEGS_B = ['.KBKKBK.', '..KBBK..', '..KKKK..'];
+function person(legs, over, flip) { return makeSprite(HEAD.concat(legs), over, flip); }
+function personSet(over) {
+  return { r: [person(LEGS_A, over, false), person(LEGS_B, over, false)],
+           l: [person(LEGS_A, over, true),  person(LEGS_B, over, true)] };
+}
+
+const BOSS_ROWS = [
+  '..KKKKKK..',
+  '.KGGGGGGK.',
+  '.KSSSSSSK.',
+  '.KSKSSKSK.',
+  '.KSSSSSSK.',
+  '..KSKKSK..',
+  '..KKSSKK..',
+  '.KRRRRRRK.',
+  'KRRRKKRRRK',
+  'KRRRKKRRRK',
+  'KRRRKKRRRK',
+  'KSRRKKRRSK',
+  '.KRRRRRRK.',
+  '.KDDDDDDK.',
+  '.KDDKKDDK.',
+  'KDDK..KDDK',
+  'KKKK..KKKK'
+];
+
+const SPR = {
+  player: personSet(null),
+  col: [
+    personSet({ W: '#68b8f8', R: '#f8d838', N: '#8a8a9a', B: '#5a3a8a' }),
+    personSet({ W: '#38a848', R: '#f0f0f0', N: '#f8d838', B: '#404060' })
+  ],
+  cleaner: personSet({ W: '#f890b8', R: '#f0f0f0', N: '#8a8a9a', B: '#3a3a5a' }),
+  intern: personSet({ W: '#f8d838', R: '#d83830', N: '#f0f0f0', B: '#2c58c8' }),
+  boss: [makeSprite(BOSS_ROWS, null, true), makeSprite(BOSS_ROWS, null, false)],
+  calc: makeSprite([      // калькулятор — снаряд главбуха
+    'KKKKKKKK',
+    'KEEEEEEK',
+    'KKKKKKKK',
+    'KGWGWGWK',
+    'KGGGGGGK',
+    'KGWGWGWK',
+    'KGGGGGGK',
+    'KGWGWGRK',
+    'KKKKKKKK'
+  ]),
+  chart: makeSprite([     // падающий график — снаряд директора
+    'KKKKKKKKKK',
+    'KWWWWWWWWK',
+    'KWRWWWWWWK',
+    'KWWRWWWWWK',
+    'KWWWRRWWWK',
+    'KWWWWWRWWK',
+    'KWWWWWWRWK',
+    'KKKKKKKKKK'
+  ]),
+  mop: makeSprite([       // швабра — снаряд уборщицы (головой влево)
+    'KKKKKKKKKK.KKK',
+    'KNNNNNNNNKKWWK',
+    'KKKKKKKKKKKWWK',
+    '..........KKKK'
+  ], null, true),
+  rag: makeSprite([       // мокрая тряпка
+    '.KKKK.',
+    'KGGLGK',
+    'KGLGGK',
+    '.KKKK.'
+  ]),
+  folder: makeSprite([
+    'KKKK......',
+    'KYYKKKKKKK',
+    'KYYYYYYYYK',
+    'KWWWWWWWWK',
+    'KYYYYYYYYK',
+    'KYYYYYYYYK',
+    'KKKKKKKKKK'
+  ]),
+  cooler: makeSprite([
+    '..KKKKKK..',
+    '.KLLLLLLK.',
+    '.KLLLLLLK.',
+    '.KLLLLLLK.',
+    '.KLLLLLLK.',
+    '..KKKKKK..',
+    '.KWWWWWWK.',
+    '.KWWWWWWK.',
+    '.KWKKKKWK.',
+    '.KWWWWWWK.',
+    '.KWWWWWWK.',
+    '.KWWWWWWK.',
+    '.KWWWWWWK.',
+    '.KWWWWWWK.',
+    '.KWWWWWWK.',
+    '.KKKKKKKK.'
+  ]),
+  bin: makeSprite([
+    '..KWWK....',
+    '.KWWWWK.K.',
+    'KKKKKKKKKK',
+    'KGGGGGGGGK',
+    '.KGDGGDGK.',
+    '.KGDGGDGK.',
+    '.KGDGGDGK.',
+    '.KGDGGDGK.',
+    '.KGDGGDGK.',
+    '.KGGGGGGK.',
+    '..KKKKKK..'
+  ]),
+  printer: makeSprite([
+    '...KWWWWWWK...',
+    '...KWWWWWWK...',
+    '.KKKKKKKKKKKK.',
+    'KGGGGGGGGGGGGK',
+    'KGDDDDDDGYGGGK',
+    'KGGGGGGGGGGGGK',
+    'KGGGGGGGGGGGGK',
+    'KKKKKKKKKKKKKK',
+    '.KK........KK.'
+  ]),
+  courier: makeSprite([
+    '.KKKKKKKKKK.',
+    '.KNNNNNNNNK.',
+    '.KNYYYYYNNK.',
+    '.KNNNNNNNNK.',
+    '.KKKKKKKKKK.',
+    '.KGGK..KGGK.',
+    '.KGGK..KGGK.',
+    '..KK....KK..'
+  ]),
+  energy: makeSprite([
+    '.KKK.',
+    'KLLLK',
+    'KBBBK',
+    'KYYYK',
+    'KBBBK',
+    'KBYBK',
+    'KBBBK',
+    'KBBBK',
+    '.KKK.'
+  ]),
+  donut: makeSprite([
+    '..KKKKK..',
+    '.KPPPPPK.',
+    'KPPYPYPPK',
+    'KPYKKKPPK',
+    'KPPKKKYPK',
+    'KPYKKKPPK',
+    'KPPYPYPPK',
+    '.KPPPPPK.',
+    '..KKKKK..'
+  ]),
+  phones: makeSprite([
+    '..KKKKKKK..',
+    '.KK.....KK.',
+    'KK.......KK',
+    'K.........K',
+    'KRK.....KRK',
+    'KRK.....KRK',
+    'KRK.....KRK',
+    '.KKK...KKK.'
+  ]),
+  bill: makeSprite([      // купюра — «премия»
+    'KKKKKKKKKK',
+    'KEEEEEEEEK',
+    'KEWEYYEWEK',
+    'KEEYWWYEEK',
+    'KEWEYYEWEK',
+    'KEEEEEEEEK',
+    'KKKKKKKKKK'
+  ]),
+  heartFull: makeSprite([
+    '.KK.KK.',
+    'KRRKRRK',
+    'KRRRRRK',
+    '.KRRRK.',
+    '..KRK..',
+    '...K...'
+  ]),
+  heartEmpty: makeSprite([
+    '.KK.KK.',
+    'KRRKRRK',
+    'KRRRRRK',
+    '.KRRRK.',
+    '..KRK..',
+    '...K...'
+  ], { R: '#40405a' })
+};
+
+// ---------- Боссы (по одному на этаж) ----------
+const BOSSES = [
+  { name: 'ГЛАВНЫЙ БУХГАЛТЕР', hp: 3, kind: 'calc', col: '#68b8f8',
+    quote: 'Где отчёт по командировке?!', atk: 'Где отчёт по командировке?!', sup: 'ДЕБЕТ С КРЕДИТОМ НЕ СХОДИТСЯ!',
+    lose: 'Главбух нашёл ошибку в твоём отчёте!', pal: { R: '#4a6a9a', D: '#2a3450', G: '#d0d0d8' } },
+  { name: 'ГЕНЕРАЛЬНЫЙ ДИРЕКТОР', hp: 4, kind: 'chart', col: '#f8d838',
+    quote: 'План продаж не выполнен!', atk: 'План продаж не выполнен!', sup: 'ОПТИМИЗАЦИЯ!',
+    lose: 'План выполнен: сотрудник сокращён.', pal: { R: '#5a2a8a', D: '#20102a', G: '#f8d838' } },
+  { name: 'УБОРЩИЦА', hp: 5, kind: 'mop', col: '#f890b8',
+    quote: 'ПО ПОМЫТОМУ НЕ ХОДИТЬ!', atk: 'ПО ПОМЫТОМУ НЕ ХОДИТЬ!', sup: 'ВЕСЬ ПОЛ МОКРЫЙ!',
+    lose: 'Уборщица вымыла тебя из здания.', pal: { R: '#f890b8', D: '#3a3a5a', G: '#c8c8d8' } }
+];
+BOSSES.forEach(b => { b.spr = [makeSprite(BOSS_ROWS, b.pal, true), makeSprite(BOSS_ROWS, b.pal, false)]; });
+const FINAL_FLOOR = BOSSES.length;
+const ARENA_X = WORLD - W - 30;     // отсюда начинается битва с боссом
+const BOSS_MIN = WORLD - W + 110, BOSS_MAX = WORLD - W + 225;
+
+// ---------- Зоны коридора ----------
+const THEMES = [
+  { name: 'БУХГАЛТЕРИЯ', wall: '#2b3252', ceil: '#1a1d33', trim: '#4a5488', panel: '#343c66',
+    floor: '#4a4266', floorTop: '#7a70a0', seam: '#3a3452', light: '#f8f0b0', cone: 'rgba(248,240,176,0.05)',
+    door: '#7a4c28', doorIn: '#5a3618', deco: 'window' },
+  { name: 'ОТДЕЛ КАДРОВ', wall: '#2f5a4a', ceil: '#183328', trim: '#5aa088', panel: '#274a3c',
+    floor: '#5a5a48', floorTop: '#8a8a68', seam: '#484838', light: '#f0f8c0', cone: 'rgba(240,248,192,0.05)',
+    door: '#a06a3a', doorIn: '#7a4a24', deco: 'board' },
+  { name: 'СЕРВЕРНАЯ', wall: '#141828', ceil: '#0a0c18', trim: '#28385a', panel: '#1a2038',
+    floor: '#242838', floorTop: '#3a4a6a', seam: '#181c2c', light: '#68b8f8', cone: 'rgba(104,184,248,0.05)',
+    door: '#28385a', doorIn: '#1a2038', deco: 'rack' },
+  { name: 'КАБИНЕТ ДИРЕКТОРА', wall: '#5a2030', ceil: '#301018', trim: '#d8a838', panel: '#6a4426',
+    floor: '#8a2434', floorTop: '#d8a838', seam: '#6a1828', light: '#ffe8a0', cone: 'rgba(255,232,160,0.06)',
+    door: '#3a2010', doorIn: '#2a1408', deco: 'art' }
+];
+const zoneOf = x => Math.max(0, Math.min(3, Math.floor(x / ZW)));
+
+// ---------- Звук (Web Audio, всё синтезируется) ----------
+let AC = null, muted = false;
+function ensureAudio() {
+  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (AC && AC.state === 'suspended') AC.resume();
+}
+function tone(f, d, type, vol, endF, delay) {
+  if (!AC || muted) return;
+  const t = AC.currentTime + (delay || 0);
+  const o = AC.createOscillator(), g = AC.createGain();
+  o.type = type || 'square';
+  o.frequency.setValueAtTime(f, t);
+  if (endF) o.frequency.exponentialRampToValueAtTime(Math.max(20, endF), t + d);
+  g.gain.setValueAtTime(vol || 0.06, t);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  o.connect(g); g.connect(AC.destination);
+  o.start(t); o.stop(t + d + 0.02);
+}
+const SFX = {
+  jump:   () => tone(280, 0.16, 'square', 0.05, 700),
+  slide:  () => tone(400, 0.2, 'triangle', 0.05, 120),
+  pick:   () => { tone(660, 0.08, 'square', 0.05); tone(880, 0.08, 'square', 0.05, 0, 0.07); tone(1320, 0.12, 'square', 0.05, 0, 0.14); },
+  coin:   n => { tone(1318 + (n % 5) * 110, 0.06, 'square', 0.035); tone(1760 + (n % 5) * 110, 0.1, 'square', 0.03, 0, 0.05); },
+  bonus:  () => { [988, 1318, 1568, 1976, 2637].forEach((f, i) => tone(f, 0.12, 'square', 0.05, 0, i * 0.07)); },
+  hit:    () => tone(220, 0.3, 'sawtooth', 0.09, 50),
+  talk:   () => { tone(180, 0.1, 'square', 0.06, 120); tone(150, 0.1, 'square', 0.06, 100, 0.1); },
+  paper:  () => tone(900, 0.08, 'square', 0.04, 500),
+  throw_: () => tone(500, 0.12, 'sawtooth', 0.04, 220),
+  zone:   () => { tone(523, 0.08, 'square', 0.04); tone(784, 0.14, 'square', 0.04, 0, 0.08); },
+  blackout: () => tone(300, 0.5, 'sawtooth', 0.06, 40),
+  win:    () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, 0.16, 'square', 0.06, 0, i * 0.13)),
+  lose:   () => [392, 330, 262, 196].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, 0, i * 0.2)),
+  start:  () => [392, 523, 659].forEach((f, i) => tone(f, 0.1, 'square', 0.05, 0, i * 0.08)),
+  stomp:  () => { tone(120, 0.2, 'square', 0.09, 500); tone(90, 0.25, 'sawtooth', 0.06, 40, 0.05); },
+  intro:  () => [196, 196, 233, 196, 155].forEach((f, i) => tone(f, 0.28, 'sawtooth', 0.07, 0, i * 0.24)),
+  boom:   () => tone(150, 0.7, 'sawtooth', 0.09, 30)
+};
+const mtof = n => 440 * Math.pow(2, (n - 69) / 12);
+const MEL  = [76,0,79,0,83,0,79,0, 81,0,83,81,79,0,76,0, 74,0,77,0,81,0,77,0, 79,0,81,79,76,0,72,0];
+const BASS = [40,0,40,0,47,0,47,0, 45,0,45,0,43,0,43,0, 38,0,38,0,45,0,45,0, 43,0,43,0,40,0,40,0];
+let musicT = 0, musicStep = 0;
+function musicTick(dt, loud) {
+  musicT += dt;
+  while (musicT >= 0.16) {
+    musicT -= 0.16;
+    const m = MEL[musicStep % MEL.length], b = BASS[musicStep % BASS.length];
+    if (m) tone(mtof(m), 0.14, 'square', loud ? 0.04 : 0.014);
+    if (b) tone(mtof(b), 0.18, 'triangle', loud ? 0.07 : 0.035);
+    musicStep++;
+  }
+}
+
+// ---------- Ввод ----------
+const keys = {};
+const BLOCK = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'];
+const JUMP = ['Space', 'ArrowUp', 'KeyW'];
+const DOWN = ['ArrowDown', 'KeyS'];
+window.addEventListener('keydown', e => {
+  if (BLOCK.includes(e.code)) e.preventDefault();      // стрелки и пробел не скроллят страницу
+  ensureAudio();
+  if (!keys[e.code]) onPress(e.code);
+  keys[e.code] = true;
+}, { passive: false });
+window.addEventListener('keyup', e => { keys[e.code] = false; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+function onPress(code) {
+  if (code === 'KeyM') { muted = !muted; return; }
+  const go = code === 'Enter' || code === 'Space';
+  if (state === 'title') { if (go) startRun(); return; }
+  if (state === 'win')   { if (go && endT > 0.6) { if (floorNo >= FINAL_FLOOR) startRun(); else nextFloor(); } return; }
+  if (state === 'lose')  { if (go && endT > 0.6) startRun(); return; }
+  if (state === 'play') {
+    if (fight.phase === 'intro') { if (go && fight.t > 0.9) startFight(); return; }   // экран битвы можно пропустить
+    if (code === 'KeyP') paused = !paused;
+    if (JUMP.includes(code)) p.jumpBuf = 0.12;
+    if (DOWN.includes(code)) p.slideBuf = 0.12;
+  }
+}
+
+// ---------- Состояние ----------
+function mulberry(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+let state = 'title', paused = false, endT = 0, tTitle = 0;
+let p, cam = 0, ents = [], folders = [], papers = [], interns = [], puddles = [], floaters = [], particles = [];
+let timeLeft = 0, timeLimit = 80, lives = MAX_LIVES, spawnT = 0, internT = 0, evT = 0, ev = null, shake = 0;
+let fight = null, shots = [], floodT = 0, bossDead = false;
+let floorNo = 1, total = 0, floorScore = 0, coinsGot = 0, bonusGot = 0, coinChain = 0, coinT = 0, curZone = -1, toast = null, endMsg = '', best = 0;
+
+try { best = +localStorage.getItem('bureau_best') || 0; } catch (e) {}
+
+const PHRASES = ['Отчёт?', 'Срочно!', 'Совещание!', 'Вы прочли?', 'Подпишите!', 'Есть минутка?'];
+const BONUS_JOKES = ['ПРЕМИЯ! +300р', 'КВАРТАЛЬНАЯ! +300р', 'ЗА ПЕРЕРАБОТКУ! +300р'];
+const PATTERN = [0, 1, 0, 0, 1, 1, 0, 1];   // 0 — снаряд низко, 1 — на уровне груди
+const STUN_LINES = ['Ай!', 'Мой отчёт!', 'Это нарушение!', 'Я вам жалобу напишу!'];
+
+const ZONE_DENSITY = [1, 0.9, 0.78, 0.62];   // множитель расстояния между препятствиями по зонам
+
+const WEIGHTS = [
+  // Бухгалтерия
+  [['talker', 26], ['bin', 26], ['cooler', 14], ['printer', 12], ['duct', 6], ['pickup', 16], ['boss', 6]],
+  // Отдел кадров
+  [['talker', 30], ['boss', 10], ['cleaner', 12], ['bin', 16], ['printer', 8], ['duct', 8], ['pickup', 14], ['cooler', 6]],
+  // Серверная
+  [['courier', 20], ['printer', 16], ['bin', 12], ['cooler', 6], ['duct', 10], ['boss', 12], ['talker', 8], ['pickup', 10]],
+  // Кабинет директора (перед боссом — больше препятствий, меньше бонусов)
+  [['boss', 20], ['courier', 16], ['printer', 14], ['talker', 16], ['duct', 10], ['bin', 14], ['pickup', 6], ['cleaner', 8]]
+];
+
+function buildLevel(fl) {
+  const rnd = mulberry(20240920 + fl * 977);
+  const rr = (a, b) => a + rnd() * (b - a);
+  const dens = Math.max(0.72, 1 - 0.06 * (fl - 1));   // на верхних этажах препятствия чаще
+  ents = []; puddles = []; folders = []; papers = []; interns = []; particles = []; floaters = [];
+
+  const pick = list => {
+    let s = list.reduce((a, b) => a + b[1], 0) * rnd();
+    for (const [k, w] of list) { s -= w; if (s <= 0) return k; }
+    return list[0][0];
+  };
+  const pk = (kind, x, up) => {
+    const sp = SPR[kind];
+    return { t: kind, x, y: FLOOR - up - sp.height, w: sp.width, h: sp.height, taken: false, ph: rnd() * 6 };
+  };
+  const bin = x => ({ t: 'bin', x, y: FLOOR - 11, w: 10, h: 11 });
+
+  let x = 280;
+  while (x < BOSS_ZONE) {
+    const kind = pick(WEIGHTS[zoneOf(x)]);
+    let step = 130;
+    switch (kind) {
+      case 'talker':
+        ents.push({ t: 'talker', x, y: FLOOR - 14, w: 6, h: 14, v: rnd() < 0.5 ? 0 : 1, b: Math.floor(rnd() * PHRASES.length), face: -1, anim: rnd() * 5 });
+        step = rr(120, 170); break;
+      case 'boss':
+        ents.push({ t: 'boss', x, y: FLOOR - 17, w: 8, h: 17, face: -1, active: false, anim: 0 });
+        step = rr(170, 220); break;
+      case 'bin':
+        ents.push(bin(x)); if (rnd() < 0.4) ents.push(bin(x + 24));
+        step = rr(100, 150); break;
+      case 'cooler':
+        puddles.push({ x0: x - 16, x1: x + 26 });
+        ents.push({ t: 'cooler', x, y: FLOOR - 16, w: 10, h: 16 });
+        if (rnd() < 0.5) ents.push(bin(x + 34));
+        step = rr(150, 190); break;
+      case 'printer':
+        ents.push({ t: 'printer', x, y: FLOOR - 9, w: 14, h: 9, cd: 1 + rnd(), kick: 0 });
+        step = rr(130, 170); break;
+      case 'courier':
+        ents.push({ t: 'courier', x, y: FLOOR - 8, w: 12, h: 8, active: false });
+        step = rr(150, 210); break;
+      case 'cleaner':
+        ents.push({ t: 'cleaner', x, y: FLOOR - 14, w: 6, h: 14, active: false, anim: 0, trail: 0 });
+        step = rr(150, 200); break;
+      case 'duct':
+        ents.push({ t: 'duct', x, y: 13, w: 16, h: FLOOR - 12 - 13 });
+        step = rr(110, 150); break;
+      default: {
+        const q = rnd();
+        const kind = q < 0.45 ? 'energy' : q < 0.8 ? 'phones' : (x < 1000 ? 'energy' : 'donut');   // пончиков в самом начале нет
+        ents.push(pk(kind, x, 4 + Math.floor(rnd() * 3) * 10));
+        step = rr(90, 130);
+      }
+    }
+    // чем дальше зона, тем плотнее; последние 400 px перед боссом — самый плотный «коридор смерти» (но не теснее 75 px)
+    x += Math.max(75, step * dens * (x > BOSS_ZONE - 400 ? 0.5 : ZONE_DENSITY[zoneOf(x)]));
+  }
+  [1600, 3200].forEach(dx => ents.push(pk('donut', dx + 10, 10)));   // гарантированные пончики
+  for (let z = 1; z <= 3; z++) ents.push(pk('bill', z * ZW + 200 + rnd() * 800, 22));   // 3 премии
+
+  // аванс: монеты дугой над корзинами (награда за прыжок) и рядами на свободных участках
+  const coin = (cx, up) => ({ t: 'coin', x: cx, y: FLOOR - up - 6, w: 6, h: 6, taken: false, ph: rnd() * 6 });
+  const hazards = ents.filter(e => e.t === 'bin' || e.t === 'printer' || e.t === 'courier').map(e => e.x);
+  const arc = [8, 20, 28, 20, 8];
+  ents.filter(e => e.t === 'bin').forEach(e => arc.forEach((up, i) => ents.push(coin(e.x + 2 + (i - 2) * 12, up))));
+  for (let cx = 200; cx < BOSS_ZONE; cx += rr(220, 340)) {
+    if (hazards.some(hx => Math.abs(hx - cx) < 70)) continue;
+    const n = 3 + Math.floor(rnd() * 3);
+    for (let i = 0; i < n; i++) ents.push(coin(cx + i * 12, 4));
+  }
+  ents.sort((a, b) => a.x - b.x);
+}
+
+function startRun() { floorNo = 1; total = 0; lives = MAX_LIVES; startFloor(); }
+function nextFloor() { floorNo++; lives = Math.min(MAX_LIVES, lives + 1); startFloor(); }
+
+function startFloor() {
+  buildLevel(floorNo);
+  const def = BOSSES[Math.min(floorNo, FINAL_FLOOR) - 1];
+  fight = { def, phase: 'wait', t: 0, x: BOSS_MAX, y: FLOOR - 17, w: 8, h: 17, hp: def.hp, maxHp: def.hp, face: -1, dir: -1,
+            atkT: 1.4, atkN: 0, stun: 0, inv: 0, shout: 0, shoutS: '', mode: 'walk', tel: 0, dead: 0, queue: [] };
+  shots = []; floodT = 0; bossDead = false;
+  timeLimit = Math.max(66, 80 - 4 * (floorNo - 1));
+  timeLeft = timeLimit;
+  p = { x: 16, y: FLOOR, vx: 0, vy: 0, onGround: true, face: 1, anim: 0, jumpBuf: 0, slideBuf: 0, coyote: 0,
+        slide: 0, slideCd: 0, inv: 0, kb: 0, boost: 0, phones: 0, dustT: 0 };
+  cam = 0; spawnT = 4; internT = 10; evT = 12 + Math.random() * 6; ev = null; shake = 0; coinsGot = 0; bonusGot = 0; coinChain = 0; coinT = 0;
+  paused = false; state = 'play'; endT = 0; musicT = 0; musicStep = 0;
+  curZone = 0; toast = { s: 'ЭТАЖ ' + floorNo + ' · ' + THEMES[0].name, t: 0 };
+  SFX.start();
+}
+
+const rectHit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+const floater = (x, y, s, c) => floaters.push({ x, y, s, c, t: 0 });
+
+function burst(x, y, n, cols, sp, g) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = sp * (0.4 + Math.random() * 0.6);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - sp * 0.3, life: 0.5 + Math.random() * 0.3,
+                     c: cols[i % cols.length], s: Math.random() < 0.5 ? 1 : 2, g: g === undefined ? 200 : g });
+  }
+}
+
+function rankOf(t) { return t < 800 ? 'СТАЖЁР' : t < 2200 ? 'МЕНЕДЖЕР' : t < 4500 ? 'НАЧАЛЬНИК ОТДЕЛА' : 'ДИРЕКТОР'; }
+
+function endGame(win, msg) {
+  state = win ? 'win' : 'lose'; endT = 0; endMsg = msg;
+  if (win) {
+    floorScore = Math.round(timeLeft * 10) + lives * 100 + coinsGot * 10 + bonusGot * 300 + (bossDead ? 500 : 0);
+    total += floorScore;
+    SFX.win();
+  } else SFX.lose();
+  if (total > best) { best = total; try { localStorage.setItem('bureau_best', String(best)); } catch (e) {} }
+}
+
+function hurt(kind, fromX) {
+  if (p.inv > 0) return;
+  const dir = p.x + 4 < fromX ? -1 : 1;
+  let kbT = 0.25, vx = 110, vy = -110;
+  if (kind === 'talk')       { timeLeft -= 5; floater(p.x, p.y - 22, '-5 СЕК', '#f8d838'); p.inv = 1.0; SFX.talk(); }
+  else if (kind === 'push')  { timeLeft -= 3; floater(p.x, p.y - 22, '-3 СЕК', '#f8d838'); p.inv = 1.0; SFX.talk(); }
+  else if (kind === 'paper') { timeLeft -= 2; floater(p.x, p.y - 22, '-2 СЕК', '#f8d838'); p.inv = 0.8; SFX.paper(); kbT = 0.12; vx = 60; vy = -60; }
+  else {
+    lives--; floater(p.x, p.y - 22, '-1 ЖИЗНЬ', '#d83830'); p.inv = 1.4; SFX.hit();
+    if (lives <= 0) { shake = 0.4; burst(p.x + 4, p.y - 8, 14, ['#f0f0f0', '#f8d838', '#d83830'], 90); endGame(false, fight.phase === 'fight' ? fight.def.lose : 'Тебя завалили работой!'); return; }
+  }
+  burst(p.x + 4, p.y - 8, 8, ['#f0f0f0', '#f8d838'], 70);
+  p.kb = kbT; p.vx = vx * dir; p.vy = vy; p.onGround = false; p.slide = 0; shake = 0.25;
+}
+
+// ---------- Битва с боссом ----------
+function enterArena() {
+  fight.phase = 'intro'; fight.t = 0;
+  cam = WORLD - W;                       // камера запирается на арене
+  folders = []; papers = []; interns = []; ev = null; p.vx = 0;
+  SFX.intro();
+}
+
+function startFight() { fight.phase = 'fight'; fight.atkT = 1.4; toast = null; }
+
+function bossAttack(rage) {
+  const b = fight, d = b.def;
+  b.atkN++;
+  const sup = b.atkN % 4 === 0;            // каждая четвёртая атака — суперудар
+  b.atkT = Math.max(1.1, 2.1 - 0.12 * (floorNo - 1)) / rage;
+  const sp = 95 + 8 * floorNo;
+  if (sup) {
+    b.shoutS = d.sup; b.shout = 1.8; b.atkT += 1.2;
+    if (d.kind === 'calc') {               // калькуляторы падают с потолка (место отмечено заранее)
+      for (let i = 0; i < 5; i++) shots.push({ t: 'calcfall', x: cam + 22 + i * ((W - 60) / 4) + Math.random() * 10, y: -12, vy: 0, w: 8, h: 9, warn: 1.0 });
+    } else if (d.kind === 'chart') {       // «оптимизация»: директор с разбега проносится через весь зал
+      b.mode = 'tel'; b.tel = 0.9;
+    } else {                               // уборщица: весь пол мокрый + очередь из швабр
+      floodT = 5;
+      [0, 0.55, 1.1].forEach((dl, i) => b.queue.push({ d: dl, s: { t: 'mop', x: b.x - 4, y: i === 1 ? FLOOR - 16 : FLOOR - 4, w: 14, h: 4, vx: -(sp + 25) } }));
+    }
+    return;
+  }
+  b.shoutS = d.atk; b.shout = 1.2;
+  SFX.throw_();
+  const mid = PATTERN[b.atkN % PATTERN.length];
+  if (d.kind === 'calc')       shots.push({ t: 'calc', x: b.x - 2, y: mid ? FLOOR - 22 : FLOOR - 9, w: 8, h: 9, vx: -sp });
+  else if (d.kind === 'chart') shots.push({ t: 'chart', x: b.x - 2, y: mid ? FLOOR - 22 : FLOOR - 8, w: 10, h: 8, vx: -sp - 10 });
+  else if (b.atkN % 3 === 2)   { // тряпка по дуге: где упадёт, там будет лужа
+    const flight = 2 * 130 / 300;
+    shots.push({ t: 'rag', x: b.x, y: b.y, w: 6, h: 4, vx: Math.max(-150, Math.min(-30, ((p.x + 4) - b.x) / flight)), vy: -130 });
+  } else shots.push({ t: 'mop', x: b.x - 6, y: mid ? FLOOR - 16 : FLOOR - 4, w: 14, h: 4, vx: -sp });
+}
+
+function stompBoss() {
+  const b = fight;
+  b.hp--; b.stun = 1.3; b.inv = 1.7; b.mode = 'walk'; b.atkT = 1.6; b.queue = [];
+  p.vy = -215; p.onGround = false; p.inv = Math.max(p.inv, 0.5); shake = 0.3;
+  floater(b.x, b.y - 4, 'ХРЯСЬ!', '#f8d838');
+  burst(b.x + 4, b.y + 2, 10, ['#f8d838', '#f0f0f0'], 80);
+  SFX.stomp();
+  if (lives < MAX_LIVES) ents.push({ t: 'donut', x: b.x, y: FLOOR - 11, w: 9, h: 9, taken: false, ph: 0 });   // боссы роняют пончики
+  if (b.hp <= 0) {
+    b.phase = 'dying'; b.dead = 0; shots = []; floodT = 0; b.shout = 0; SFX.boom();
+  } else { b.shoutS = STUN_LINES[Math.floor(Math.random() * STUN_LINES.length)]; b.shout = 1.1; }
+}
+
+function updateFight(dt, pb) {
+  const b = fight;
+  b.stun = Math.max(0, b.stun - dt); b.inv = Math.max(0, b.inv - dt); b.shout = Math.max(0, b.shout - dt);
+  floodT = Math.max(0, floodT - dt);
+
+  if (b.phase === 'fight') {
+    const rage = 1 + 0.25 * (b.maxHp - b.hp);      // чем меньше здоровья, тем злее
+    if (b.stun <= 0) {
+      if (b.mode === 'walk') {
+        b.x += b.dir * 26 * rage * dt;
+        if (b.x <= BOSS_MIN) b.dir = 1; else if (b.x >= BOSS_MAX) { b.x = BOSS_MAX; b.dir = -1; }
+        b.face = p.x < b.x ? -1 : 1;
+        b.atkT -= dt;
+        if (b.atkT <= 0) bossAttack(rage);
+      } else if (b.mode === 'tel') {
+        b.tel -= dt; if (b.tel <= 0) { b.mode = 'dash'; b.face = -1; }
+      } else if (b.mode === 'dash') {
+        b.x -= 170 * dt;
+        if (b.x <= cam + 6) b.mode = 'ret';
+      } else if (b.mode === 'ret') {
+        b.x += 100 * dt; b.face = 1;
+        if (b.x >= BOSS_MAX) { b.x = BOSS_MAX; b.mode = 'walk'; b.dir = -1; b.atkT = 1.2; }
+      }
+      for (const q of b.queue) { q.d -= dt; if (q.d <= 0) { shots.push(q.s); q.done = true; SFX.throw_(); } }
+      b.queue = b.queue.filter(q => !q.done);
+    }
+    // столкновение: сверху — удар по боссу, сбоку — урон игроку
+    if (b.stun <= 0 && rectHit(pb, b)) {
+      if (p.vy > 0 && p.y <= b.y + 12 && b.inv <= 0) stompBoss(); else hurt('hit', b.x + 4);
+    }
+  } else if (b.phase === 'dying') {
+    b.dead += dt;
+    if (Math.random() < dt * 20) burst(b.x + 4, b.y + 8, 3, ['#f8d838', '#f0f0f0', '#38e858'], 60);
+    if (b.dead > 2.2) {
+      b.phase = 'done'; bossDead = true; SFX.win();
+      floater(b.x, b.y - 8, 'БОСС ПОБЕЖДЁН! +500р', '#38e858');
+      for (let i = 0; i < 10; i++) ents.push({ t: 'coin', x: b.x - 40 + i * 9, y: FLOOR - 10, w: 6, h: 6, taken: false, ph: i });   // босс выронил зарплату
+      toast = { s: 'ЛИФТ ОТКРЫТ!', t: 0 };
+    }
+  }
+
+  // снаряды
+  for (const s of shots) {
+    if (s.t === 'calcfall') {
+      if (s.warn > 0) { s.warn -= dt; continue; }
+      s.vy += 420 * dt; s.y += s.vy * dt;
+      if (rectHit(pb, s)) { s.dead = true; hurt('hit', s.x + 4); }
+      else if (s.y + s.h >= FLOOR) { s.dead = true; burst(s.x + 4, FLOOR - 2, 6, ['#8a8a9a', '#38e858', '#f0f0f0'], 45); }
+    } else if (s.t === 'rag') {
+      s.vy += 300 * dt; s.x += s.vx * dt; s.y += s.vy * dt;
+      if (rectHit(pb, s)) { s.dead = true; hurt('paper', s.x); }
+      else if (s.y + s.h >= FLOOR) { s.dead = true; puddles.push({ x0: s.x - 14, x1: s.x + 20, exp: 8 }); burst(s.x + 3, FLOOR - 2, 6, ['#68b8f8', '#f0f0f0'], 40); }
+    } else {
+      s.x += s.vx * dt;
+      if (rectHit(pb, s)) { s.dead = true; hurt('hit', s.x + s.w / 2); }
+      if (s.x < cam - 30) s.dead = true;
+    }
+  }
+  shots = shots.filter(s => !s.dead);
+}
+
+// ---------- Обновление ----------
+function update(dt) {
+  tTitle += dt;
+  if (state === 'win' || state === 'lose') { endT += dt; shake = Math.max(0, shake - dt); updateParticles(dt); return; }
+  if (state !== 'play' || paused) return;
+
+  // выход на арену: игра замирает, показывается экран битвы с боссом
+  if (fight.phase === 'wait' && p.x >= ARENA_X) enterArena();
+  if (fight.phase === 'intro') { fight.t += dt; updateParticles(dt); if (fight.t > 3.5) startFight(); return; }
+
+  if (fight.phase === 'wait') {      // с момента встречи с боссом время стоит до конца этажа
+    timeLeft -= dt;
+    if (timeLeft <= 0) { timeLeft = 0; endGame(false, 'Рабочий день закончился!'); return; }
+  }
+
+  const L = keys.ArrowLeft || keys.KeyA, R = keys.ArrowRight || keys.KeyD;
+  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW;
+  const maxV = p.boost > 0 ? 130 : 85;
+  const onPuddle = p.onGround && (floodT > 0 || puddles.some(q => p.x + 4 > q.x0 && p.x + 4 < q.x1));
+
+  p.inv = Math.max(0, p.inv - dt);
+  p.boost = Math.max(0, p.boost - dt);
+  p.phones = Math.max(0, p.phones - dt);
+  p.jumpBuf = Math.max(0, p.jumpBuf - dt);
+  p.slideBuf = Math.max(0, p.slideBuf - dt);
+  coinT = Math.max(0, coinT - dt);
+  const wasSliding = p.slide > 0;
+  p.slide = Math.max(0, p.slide - dt);
+  if (wasSliding && p.slide <= 0) {
+    // нельзя вставать, пока над головой воздуховод
+    const st = { x: p.x + 1, y: p.y - 14, w: 6, h: 14 };
+    if (ents.some(e => e.t === 'duct' && rectHit(st, { x: e.x + 1, y: e.y, w: e.w - 2, h: e.h }))) p.slide = 0.03;
+    else p.slideCd = 0.25;
+  }
+  p.slideCd = Math.max(0, p.slideCd - dt);
+  shake = Math.max(0, shake - dt);
+
+  // подкат
+  if (p.slideBuf > 0 && p.onGround && p.slide <= 0 && p.slideCd <= 0 && p.kb <= 0) {
+    p.slide = 0.5; p.slideBuf = 0; SFX.slide();
+    burst(p.x + 4, FLOOR - 1, 5, ['#8a8a9a', '#f0f0f0'], 30, 0);
+  }
+  if (p.jumpBuf > 0 && p.slide > 0) { p.slide = 0; p.slideCd = 0.1; }   // из подката можно прыгнуть
+
+  if (p.kb > 0) {
+    p.kb -= dt;
+  } else if (p.slide > 0) {
+    p.vx = p.face * 115 * (0.6 + 0.4 * Math.min(1, p.slide / 0.5));
+  } else {
+    const dir = (R ? 1 : 0) - (L ? 1 : 0);
+    const accel = p.onGround ? (onPuddle ? 110 : 700) : 260;
+    const fric  = p.onGround ? (onPuddle ? 25 : 900) : 120;
+    if (dir) {
+      p.vx += dir * accel * dt;
+      p.vx = Math.max(-maxV, Math.min(maxV, p.vx));
+      p.face = dir;
+    } else {
+      const d = fric * dt;
+      p.vx = Math.abs(p.vx) <= d ? 0 : p.vx - Math.sign(p.vx) * d;
+    }
+  }
+
+  // прыжок
+  p.coyote = p.onGround ? 0.08 : p.coyote - dt;
+  if (p.jumpBuf > 0 && p.coyote > 0 && p.kb <= 0) {
+    p.vy = -230; p.onGround = false; p.coyote = 0; p.jumpBuf = 0; SFX.jump();
+  }
+  if (!jumpHeld && p.vy < -80) p.vy = -80;
+
+  const wasAir = !p.onGround, vyBefore = p.vy;
+  p.x += p.vx * dt;
+  if (p.x < cam) { p.x = cam; if (p.vx < 0) p.vx = 0; }
+  if (p.x > WORLD - 8) p.x = WORLD - 8;
+  p.vy += 700 * dt;
+  p.y += p.vy * dt;
+  if (p.y >= FLOOR) { p.y = FLOOR; p.vy = 0; p.onGround = true; } else p.onGround = false;
+  if (wasAir && p.onGround && vyBefore > 60) burst(p.x + 4, FLOOR - 1, 5, ['#8a8a9a', '#f0f0f0'], 30, 0);
+  p.anim += dt * Math.abs(p.vx) / 85;
+
+  // пыль из-под ног
+  p.dustT -= dt;
+  if (p.onGround && Math.abs(p.vx) > 40 && p.dustT <= 0) {
+    p.dustT = 0.11;
+    particles.push({ x: p.x + 4 - Math.sign(p.vx) * 3, y: FLOOR - 1, vx: -Math.sign(p.vx) * 10, vy: -15 - Math.random() * 10, life: 0.3, c: '#8a8a9a', s: 1, g: 20 });
+  }
+
+  // камера
+  const target = fight.phase !== 'wait' ? WORLD - W : Math.max(0, Math.min(WORLD - W, p.x - 110));
+  cam += (target - cam) * Math.min(1, dt * 8);
+
+  // смена зоны
+  const z = zoneOf(p.x + 4);
+  if (z !== curZone) { curZone = z; toast = { s: THEMES[z].name, t: 0 }; SFX.zone(); }
+  if (toast) { toast.t += dt; if (toast.t > 2.4) toast = null; }
+
+  const pb = p.slide > 0 ? { x: p.x - 3, y: p.y - 8, w: 14, h: 8 } : { x: p.x + 1, y: p.y - 14, w: 6, h: 14 };
+
+  // динамические лужи (след уборщицы)
+  for (const q of puddles) if (q.exp !== undefined) q.exp -= dt;
+  puddles = puddles.filter(q => q.exp === undefined || q.exp > 0);
+
+  // сущности
+  for (const e of ents) {
+    if (e.x > cam + W + 40 || e.x + e.w < cam - 40) continue;
+    switch (e.t) {
+      case 'talker': {
+        const dx = p.x - e.x;
+        if (Math.abs(dx) < 110 && Math.abs(dx) > 4) { e.x += Math.sign(dx) * 16 * dt; e.face = Math.sign(dx); e.anim += dt; }
+        if (p.phones <= 0 && rectHit(pb, e)) hurt('talk', e.x + 3);
+        break;
+      }
+      case 'boss':
+        if (e.x < cam + W) e.active = true;
+        if (e.active) { e.x -= (28 + floorNo * 3) * dt; e.anim += dt; }
+        if (p.phones <= 0 && rectHit(pb, e)) hurt('hit', e.x + 4);   // в наушниках начальника не слышно — он безвреден
+        break;
+      case 'bin':
+        if (rectHit(pb, e)) hurt('paper', e.x + 5);   // мягкое препятствие: −2 с
+        break;
+      case 'duct':
+        if (rectHit(pb, { x: e.x + 1, y: e.y, w: e.w - 2, h: e.h })) hurt('push', e.x + 8);
+        break;
+      case 'courier':
+        if (e.x < cam + W) e.active = true;
+        if (e.active) e.x -= 100 * dt;
+        if (rectHit(pb, e)) hurt('hit', e.x + 6);
+        break;
+      case 'cleaner':
+        if (e.x < cam + W) e.active = true;
+        if (e.active) {
+          e.x -= 14 * dt; e.anim += dt; e.trail += 14 * dt;
+          if (e.trail >= 24) { e.trail -= 24; puddles.push({ x0: e.x + 8, x1: e.x + 36, exp: 10 }); }
+        }
+        break;
+      case 'printer': {
+        e.kick = Math.max(0, e.kick - dt);
+        e.cd -= dt;
+        const dx = (p.x + 4) - (e.x + 7);
+        if (e.cd <= 0 && Math.abs(dx) < 140 && e.x < cam + W - 10) {
+          e.cd = 1.8; e.kick = 0.15;
+          const flight = 2 * 130 / 300;
+          papers.push({ x: e.x + 5, y: e.y - 2, vx: Math.max(-150, Math.min(150, dx / flight)), vy: -130, w: 5, h: 3 });
+          SFX.throw_();
+        }
+        break;
+      }
+      default:
+        if (!e.taken && rectHit(pb, e)) {
+          e.taken = true;
+          const cx = e.x + e.w / 2, cy = e.y + e.h / 2;
+          if (e.t === 'energy')      { p.boost = 6; floater(p.x, p.y - 22, 'СКОРОСТЬ!', '#68b8f8'); burst(cx, cy, 10, ['#68b8f8', '#f8d838'], 60, 0); SFX.pick(); }
+          else if (e.t === 'phones') { p.phones = 7; floater(p.x, p.y - 22, 'НЕ СЛЫШУ НАЧАЛЬСТВО!', '#f890b8'); burst(cx, cy, 10, ['#f890b8', '#d83830'], 60, 0); SFX.pick(); }
+          else if (e.t === 'coin')   {
+            coinsGot++; coinChain = coinT > 0 ? coinChain + 1 : 0; coinT = 0.5;
+            if (coinsGot === 1) floater(p.x, p.y - 22, 'АВАНС!', '#f8d838');
+            burst(cx, cy, 4, ['#f8d838', '#f0f0f0'], 40, 0); SFX.coin(coinChain);
+          }
+          else if (e.t === 'bill')   {
+            bonusGot++; floater(p.x, p.y - 22, BONUS_JOKES[(bonusGot - 1) % BONUS_JOKES.length], '#38e858');
+            burst(cx, cy, 14, ['#38e858', '#f8d838', '#f0f0f0'], 75, 0); SFX.bonus();
+          }
+          else {
+            if (lives < MAX_LIVES) { lives++; floater(p.x, p.y - 22, '+1', '#f890b8'); }
+            else { timeLeft += 5; floater(p.x, p.y - 22, '+5с', '#f890b8'); }
+            burst(cx, cy, 10, ['#f890b8', '#f8d838'], 60, 0); SFX.pick();
+          }
+        }
+    }
+  }
+
+  // события: пожарная тревога и отключение света
+  if (!ev && fight.phase === 'wait' && p.x < BOSS_ZONE - 100) {
+    evT -= dt;
+    if (evT <= 0) {
+      ev = { k: 'alarm', t: 0, dur: 7, beat: -1 };          // пожарная тревога: сирена, красный свет, затемнение
+      SFX.blackout(); folders = [];                         // свет гаснет — летевшие папки исчезают
+    }
+  }
+  if (ev) {
+    ev.t += dt;
+    if (ev.k === 'alarm') {
+      const beat = Math.floor(ev.t * 2.5);
+      if (beat !== ev.beat) { ev.beat = beat; tone(beat % 2 ? 880 : 660, 0.16, 'square', 0.03); }
+    }
+    if (ev.t >= ev.dur) { ev = null; evT = 14 + Math.random() * 8; }
+  }
+  const alarm = ev && ev.k === 'alarm';
+
+  // летящие папки (во время тревоги в темноте не летят — их бы не было видно)
+  spawnT -= dt;
+  if (spawnT <= 0 && fight.phase === 'wait' && p.x < BOSS_ZONE + 200) {
+    spawnT = (Math.max(0.9, 1.4 - 0.1 * (floorNo - 1)) + Math.random() * 1.4) * (1 - 0.08 * zoneOf(p.x));   // в дальних зонах папки чаще
+    if (!alarm) folders.push({ x: cam + W + 12, y: Math.random() < 0.5 ? FLOOR - 7 : FLOOR - 25, w: 10, h: 7,
+                               v: 55 + Math.random() * 40 + floorNo * 4 });
+  }
+  for (const f of folders) {
+    f.x -= f.v * dt;
+    if (rectHit(pb, f)) { f.dead = true; hurt('hit', f.x + 5); }
+    if (f.x < cam - 20) f.dead = true;
+  }
+  folders = folders.filter(f => !f.dead);
+
+  // бумаги из принтеров
+  for (const s of papers) {
+    s.vy += 300 * dt; s.x += s.vx * dt; s.y += s.vy * dt;
+    if (rectHit(pb, s)) { s.dead = true; hurt('paper', s.x); }
+    else if (s.y >= FLOOR - 2) { s.dead = true; burst(s.x, FLOOR - 2, 3, ['#f0f0f0'], 25); }
+  }
+  papers = papers.filter(s => !s.dead);
+
+  // стажёры: догоняют сзади
+  internT -= dt;
+  if (internT <= 0 && p.x < BOSS_ZONE) {
+    internT = (8 + Math.random() * 4) * (1 - 0.1 * zoneOf(p.x));   // и стажёры чаще
+    interns.push({ x: cam - 14, y: FLOOR - 14, w: 6, h: 14, anim: 0 });
+  }
+  for (const s of interns) {
+    s.x += 70 * dt; s.anim += dt;
+    if (rectHit(pb, s)) { hurt('push', s.x + 3); }
+    if (s.x > cam + W + 20) s.dead = true;
+  }
+  interns = interns.filter(s => !s.dead);
+
+  if (fight.phase !== 'wait') updateFight(dt, pb);
+
+  for (const f of floaters) f.t += dt;
+  floaters = floaters.filter(f => f.t < 1.1);
+  updateParticles(dt);
+
+  musicTick(dt, p.phones > 0);
+
+  // лифт открывается только после победы над боссом
+  if (bossDead && p.x + 4 >= GOAL + 12) endGame(true);
+}
+
+function updateParticles(dt) {
+  for (const q of particles) { q.x += q.vx * dt; q.y += q.vy * dt; q.vy += q.g * dt; q.life -= dt; }
+  particles = particles.filter(q => q.life > 0);
+}
+
+// ---------- Рисование ----------
+function spr(img, x, y) { ctx.drawImage(img, Math.round(x), Math.round(y)); }
+function rect(x, y, w, h, c) { ctx.fillStyle = c; ctx.fillRect(Math.round(x), Math.round(y), w, h); }
+function txt(s, x, y, size, col, al, shadow) {
+  ctx.font = 'bold ' + size + 'px "Courier New", monospace';
+  ctx.textAlign = al || 'left'; ctx.textBaseline = 'top';
+  if (shadow !== false) { ctx.fillStyle = '#101020'; ctx.fillText(s, x + 1, y + 1); }
+  ctx.fillStyle = col; ctx.fillText(s, x, y);
+}
+function tw(s, size) { ctx.font = 'bold ' + size + 'px "Courier New", monospace'; return ctx.measureText(s).width; }
+
+function bubble(sx, top, s, col) {
+  const w = Math.ceil(tw(s, 6)) + 6;
+  const bx = Math.max(2, Math.min(W - w - 2, Math.round(sx - w / 2)));   // не выходит за край экрана
+  rect(bx - 1, top - 1, w + 2, 11, '#101020');
+  rect(bx, top, w, 9, '#f0f0f0');
+  rect(Math.max(bx + 1, Math.min(bx + w - 3, Math.round(sx) - 1)), top + 9, 2, 2, '#f0f0f0');
+  txt(s, bx + w / 2, top + 1, 6, col || '#101020', 'center', false);
+}
+
+function banner(s, y, col) {
+  const w = Math.ceil(tw(s, 8)) + 12;
+  rect(150 - w / 2, y - 2, w, 13, 'rgba(16,16,32,0.8)');
+  txt(s, 150, y, 8, col, 'center');
+}
+
+function drawDoor(dx, th) {
+  rect(dx - 1, FLOOR - 47, 24, 47, '#101020');
+  rect(dx, FLOOR - 46, 22, 46, th.door);
+  rect(dx + 3, FLOOR - 42, 16, 18, th.doorIn);
+  rect(dx + 17, FLOOR - 22, 2, 2, '#f8d838');
+  rect(dx + 5, FLOOR - 52, 12, 4, '#d8d0b0');
+}
+
+const SKY = ['#182848', '#1c2c54', '#142040'];
+const LEDC = ['#38e858', '#38e858', '#d83830', '#68b8f8', '#f8d838'];
+function drawTheme(z, cx) {
+  const th = THEMES[z];
+  rect(0, 0, W, FLOOR, th.wall);
+  rect(0, 0, W, 12, th.ceil); rect(0, 12, W, 1, th.trim);
+  rect(0, 132, W, FLOOR - 132, th.panel); rect(0, 132, W, 1, th.trim);
+
+  // потолочные лампы
+  for (let i = Math.floor(cx / 100) - 1; i < cx / 100 + 4; i++) {
+    const lx = i * 100 + 40 - cx;
+    rect(lx, 12, 32, 3, th.light);
+    ctx.fillStyle = th.cone;
+    ctx.beginPath(); ctx.moveTo(lx, 15); ctx.lineTo(lx + 32, 15); ctx.lineTo(lx + 54, 132); ctx.lineTo(lx - 22, 132); ctx.fill();
+  }
+
+  const i0 = Math.floor(cx / 140) - 1, i1 = cx / 140 + 3;
+  if (th.deco === 'window') {
+    for (let i = i0; i < i1; i++) {
+      const wx = i * 140 + 24 - cx, n = ((i % 5) + 5) % 5;
+      rect(wx - 2, 26, 48, 44, '#101020');
+      rect(wx, 28, 44, 40, SKY[n % 3]);
+      for (let k = 0; k < 4; k++) {
+        const bh = 8 + ((n * 7 + k * 11) % 16);
+        rect(wx + 2 + k * 10, 68 - bh, 8, bh, '#0c1430');
+        rect(wx + 4 + k * 10, 68 - bh + 3, 2, 2, '#f8d838');
+      }
+      rect(wx + 6 + n * 6, 32 + (n % 2) * 4, 2, 2, '#f0f0f0');
+      rect(wx + 21, 28, 2, 40, '#101020'); rect(wx, 46, 44, 2, '#101020');
+    }
+  } else if (th.deco === 'board') {
+    const nc = ['#f8d838', '#f0f0f0', '#f890b8', '#68b8f8'];
+    for (let i = i0; i < i1; i++) {
+      const bx = i * 140 + 24 - cx;
+      rect(bx - 2, 28, 42, 30, '#5a3a1a'); rect(bx, 30, 38, 26, '#c8985a');
+      for (let k = 0; k < 5; k++) {
+        const nx = bx + 3 + (k * 7) % 30, ny = 33 + ((k * 5 + i * 3) % 3) * 8;
+        rect(nx, ny, 6, 6, nc[(k + i + 40) % 4]); rect(nx + 2, ny, 2, 1, '#d83830');
+      }
+      const px = i * 140 + 70 - cx;
+      rect(px, FLOOR - 6, 8, 6, '#8a5a2a'); rect(px + 2, FLOOR - 18, 4, 12, '#38a848');
+      rect(px - 1, FLOOR - 14, 3, 5, '#38a848'); rect(px + 6, FLOOR - 15, 3, 5, '#38a848');
+    }
+  } else if (th.deco === 'rack') {
+    rect(0, 15, W, 3, '#28385a');
+    for (let i = Math.floor(cx / 44) - 1; i < cx / 44 + 8; i++) {
+      const rx = i * 44 - cx + 2;
+      rect(rx - 1, FLOOR - 73, 38, 73, '#0a0c18'); rect(rx, FLOOR - 72, 36, 72, '#1c2238');
+      for (let r = 0; r < 6; r++) {
+        const yy = FLOOR - 68 + r * 11;
+        rect(rx + 3, yy, 30, 8, '#0c1020'); rect(rx + 5, yy + 3, 12, 1, '#28385a');
+        const h = ((i * 7 + r * 3 + Math.floor(tTitle * 2 + (i + r) % 3)) % 5 + 5) % 5;
+        rect(rx + 27, yy + 3, 2, 2, LEDC[h]);
+      }
+    }
+  } else if (th.deco === 'art') {
+    for (let i = i0; i < i1; i++) {
+      const ax = i * 140 + 26 - cx;
+      rect(ax - 2, 32, 38, 28, th.trim); rect(ax, 34, 34, 24, '#20304a');
+      rect(ax + 4, 48, 12, 10, '#38a848'); rect(ax + 14, 42, 12, 16, '#2c58c8'); rect(ax + 22, 38, 4, 4, '#f8d838');
+    }
+  }
+  if (th.deco !== 'rack') for (let i = i0; i < i1; i++) drawDoor(i * 140 + 92 - cx, th);
+
+  // пол
+  rect(0, FLOOR, W, H - FLOOR, th.floor);
+  rect(0, FLOOR, W, 2, th.floorTop);
+  const off = Math.floor(cx) % 30;
+  for (let x = -off; x < W; x += 30) rect(x, FLOOR + 2, 1, H - FLOOR, th.seam);
+  rect(0, FLOOR + 20, W, 1, th.seam);
+  if (z === 3) rect(0, FLOOR + 5, W, 1, '#d8a838');
+}
+
+function drawBG(cx) {
+  for (let z = 0; z < 4; z++) {
+    const x0 = z * ZW - cx;
+    if (x0 >= W || x0 + ZW <= 0) continue;
+    ctx.save(); ctx.beginPath(); ctx.rect(x0, 0, ZW, H); ctx.clip();
+    drawTheme(z, cx);
+    ctx.restore();
+  }
+}
+
+function drawPuddles(cx) {
+  if (floodT > 0 && !(floodT < 1 && Math.floor(floodT * 8) % 2 === 0)) {          // «весь пол мокрый»
+    rect(0, FLOOR + 1, W, 3, '#68b8f8');
+    for (let x = -((tTitle * 30) % 24); x < W; x += 24) rect(x, FLOOR + 1, 8, 1, '#f0f0f0');
+  }
+  for (const q of puddles) {
+    const x = q.x0 - cx;
+    if (x > W || x + (q.x1 - q.x0) < 0) continue;
+    if (q.exp !== undefined && q.exp < 2 && Math.floor(q.exp * 8) % 2 === 0) continue;
+    rect(x, FLOOR + 1, q.x1 - q.x0, 3, '#68b8f8');
+    rect(x + 4, FLOOR + 1, 8, 1, '#f0f0f0'); rect(x + 20, FLOOR + 2, 8, 1, '#f0f0f0');
+  }
+}
+
+function drawLift(cx, open) {
+  const x = GOAL - cx, y = FLOOR - 54;
+  if (x > W + 10 || x < -50) return;
+  rect(x - 3, y - 12, 40, 10, '#101020'); txt('ЛИФТ', x + 17, y - 11, 8, '#f8d838', 'center', false);
+  rect(x - 2, y - 2, 38, 56, '#101020');
+  rect(x, y, 34, 54, '#8a8a9a');
+  rect(x + 3, y + 3, 28, 51, '#22223a');
+  const g = Math.min(12, open * 24);
+  rect(x + 3, y + 3, 14 - g, 51, '#c8c8d8');
+  rect(x + 17 + g, y + 3, 14 - g, 51, '#c8c8d8');
+  rect(x + 16.5, y + 3, 1, 51, '#8a8a9a');
+  rect(x + 36, y + 24, 3, 6, '#38a848');
+}
+
+function drawEnt(e, cx) {
+  const sx = e.x - cx;
+  if (sx > W + 20 || sx < -30) return;
+  switch (e.t) {
+    case 'talker': {
+      const fr = Math.floor(e.anim * 6) % 2;
+      spr((e.face > 0 ? SPR.col[e.v].r : SPR.col[e.v].l)[fr], sx - 1, e.y);
+      if (p.phones <= 0) {
+        const near = Math.abs(p.x - e.x) < 100;
+        bubble(sx + 3, e.y - 13 + Math.round(Math.sin(tTitle * 5 + e.x)), near ? PHRASES[e.b] : '..');
+      }
+      break;
+    }
+    case 'boss':
+      spr(SPR.boss[e.face > 0 ? 1 : 0], sx - 1, e.y);
+      if (p.phones <= 0 && Math.abs(p.x - e.x) < 110) bubble(sx + 4, e.y - 13, 'Где отчёт?!', '#d83830');
+      break;
+    case 'cooler': spr(SPR.cooler, sx, e.y); break;
+    case 'bin': spr(SPR.bin, sx, e.y); break;
+    case 'courier': {
+      spr(SPR.courier, sx, e.y);
+      if (e.active) { rect(sx + 13, e.y + 2, 5, 1, '#f0f0f0'); rect(sx + 15, e.y + 5, 4, 1, '#f0f0f0'); }
+      break;
+    }
+    case 'cleaner': {
+      const fr = Math.floor(e.anim * 5) % 2;
+      spr(SPR.cleaner.l[fr], sx - 1, e.y);
+      rect(sx - 4, e.y + 2, 1, 12, '#8a5a2a'); rect(sx - 6, e.y + 13, 5, 2, '#f0f0f0');   // швабра
+      break;
+    }
+    case 'printer': {
+      const ky = e.kick > 0 ? 1 : 0;
+      spr(SPR.printer, sx, e.y + ky);
+      if (e.kick > 0) rect(sx + 3, e.y - 2, 3, 2, '#f0f0f0');
+      break;
+    }
+    case 'duct': {
+      rect(sx, e.y, 16, e.h, '#6a6a80'); rect(sx + 2, e.y, 2, e.h, '#8a8a9a'); rect(sx + 13, e.y, 3, e.h, '#40405a');
+      for (let k = 0; k < 4; k++) rect(sx + k * 4, FLOOR - 18, 4, 6, k % 2 ? '#101020' : '#f8d838');
+      rect(sx + 3, FLOOR - 42, 10, 10, '#f8d838'); rect(sx + 3, FLOOR - 42, 10, 1, '#101020');
+      if (Math.floor(tTitle * 3) % 2 === 0) txt('↓', sx + 8, FLOOR - 42, 8, '#101020', 'center', false);
+      break;
+    }
+    case 'coin': {
+      if (e.taken) return;
+      const w = [6, 4, 2, 4][Math.floor(tTitle * 6 + e.ph) % 4], ox = sx + (6 - w) / 2;   // вращение монеты
+      rect(ox, e.y, w, 6, '#101020');
+      if (w > 2) { rect(ox + 1, e.y + 1, w - 2, 4, '#f8d838'); rect(ox + 1, e.y + 1, 1, 1, '#f0f0f0'); }
+      else rect(ox, e.y + 1, 2, 4, '#d8a838');
+      if (w === 6) rect(sx + 2, e.y + 2, 2, 2, '#d8a838');
+      break;
+    }
+    default:
+      if (e.taken) return;
+      spr(SPR[e.t], sx, e.y + Math.round(Math.sin(tTitle * 4 + e.ph) * 1.5));
+  }
+}
+
+function drawPlayer(cx) {
+  if (p.inv > 0 && Math.floor(p.inv * 14) % 2 === 0) return;
+  const img = (p.face > 0 ? SPR.player.r : SPR.player.l);
+  if (p.slide > 0) {
+    ctx.save();
+    ctx.translate(Math.round(p.x - cx + 4), Math.round(p.y - 4));
+    ctx.rotate(p.face > 0 ? Math.PI / 2 : -Math.PI / 2);
+    ctx.drawImage(img[0], -4, -7);
+    ctx.restore();
+    return;
+  }
+  const moving = p.onGround && Math.abs(p.vx) > 10;
+  const fr = moving ? Math.floor(p.anim * 8) % 2 : 0;
+  const x0 = Math.round(p.x - cx - 1), y0 = Math.round(p.y - 14);
+  if (p.boost > 0) {
+    for (let i = 0; i < 3; i++) rect(x0 - p.face * (6 + i * 5), y0 + 4 + i * 3, 4, 1, i ? '#68b8f8' : '#f8d838');
+  }
+  spr(img[fr], x0, y0);
+  if (p.phones > 0) {
+    rect(x0, y0 + 2, 2, 3, PAL.R); rect(x0 + 6, y0 + 2, 2, 3, PAL.R);
+    const ny = y0 - 6 - ((tTitle * 14) % 8);
+    txt('♪', x0 + 6, ny, 7, '#f890b8', 'left', false);
+  }
+}
+
+function drawBoss(cx) {
+  const b = fight, d = b.def;
+  if (b.phase === 'done') return;
+  const sx = b.x - cx;
+  if (sx > W + 20) return;
+  if (b.phase === 'dying' && Math.floor(b.dead * 12) % 2 === 0) return;      // мигает, когда побеждён
+  const ox = b.stun > 0 ? Math.round(Math.sin(tTitle * 40)) : 0;            // «в голове звёзды»
+  spr(d.spr[b.face > 0 ? 1 : 0], sx - 1 + ox, b.y);
+  if (d.kind === 'mop') { const mx = b.face > 0 ? sx + 10 : sx - 3; rect(mx, b.y + 3, 1, 15, '#8a5a2a'); rect(mx - 2, b.y + 16, 5, 2, '#f0f0f0'); }
+  if (b.stun > 0) for (let i = 0; i < 3; i++) {
+    const a = tTitle * 8 + i * 2.1;
+    rect(sx + 4 + Math.cos(a) * 6, b.y - 4 + Math.sin(a) * 2, 2, 2, '#f8d838');
+  }
+  if (b.mode === 'tel' && Math.floor(tTitle * 12) % 2 === 0) txt('!!', sx + 4, b.y - 26, 9, '#d83830', 'center');   // рывок близко
+  if (b.shout > 0) bubble(sx + 4, b.y - 13, b.shoutS, '#d83830');
+}
+
+function drawShots(cx) {
+  for (const s of shots) {
+    const sx = s.x - cx;
+    if (s.t === 'calcfall') {
+      if (s.warn > 0) {                                    // где упадёт — мигающая метка
+        rect(sx - 1, FLOOR - 1, 10, 2, Math.floor(s.warn * 10) % 2 ? '#d83830' : '#f8d838');
+        txt('!', sx + 4, FLOOR - 13, 8, '#d83830', 'center');
+      } else spr(SPR.calc, sx, s.y);
+    } else spr(SPR[s.t], sx, s.y);
+  }
+}
+
+function drawBossIntro() {
+  const d = fight.def, final = floorNo >= FINAL_FLOOR;
+  rect(0, 0, W, H, 'rgba(0,0,0,0.75)');
+  panel(28, 146);
+  const pulse = Math.floor(tTitle * 4) % 2 === 0;
+  txt(final ? 'ФИНАЛЬНАЯ БИТВА!' : 'БИТВА С БОССОМ!', 150, 35, 12, final ? (pulse ? '#d83830' : '#f8d838') : '#f8d838', 'center');
+  const s = d.spr[0];
+  ctx.drawImage(s, 135, 53 + (pulse ? 0 : 1), s.width * 3, s.height * 3);     // босс крупно
+  txt(d.name, 150, 108, 9, d.col, 'center');
+  txt('«' + d.quote + '»', 150, 121, 7, '#f0f0f0', 'center');
+  txt('Прыгни боссу на голову: ' + d.hp + (d.hp < 5 ? ' раза!' : ' раз!'), 150, 134, 7, '#68b8f8', 'center');
+  if (fight.t > 0.9 && Math.floor(tTitle * 2.5) % 2 === 0) txt('ENTER — в бой', 150, 153, 8, '#f0f0f0', 'center');
+}
+
+function drawIntern(s, cx) {
+  const sx = s.x - cx;
+  spr(SPR.intern.r[Math.floor(s.anim * 8) % 2], sx - 1, s.y);
+  rect(sx - 1, s.y - 6, 10, 6, '#f0f0f0'); rect(sx - 1, s.y - 4, 10, 1, '#8a8a9a'); rect(sx - 1, s.y - 2, 10, 1, '#8a8a9a');
+}
+
+function drawHUD() {
+  rect(0, 0, W, 15, 'rgba(16,16,32,0.75)');
+  for (let i = 0; i < MAX_LIVES; i++) spr(i < lives ? SPR.heartFull : SPR.heartEmpty, 5 + i * 9, 4);
+  txt('ЭТ.' + floorNo, 36, 4, 7, '#8a8a9a');
+  const inFight = fight.phase === 'fight' || fight.phase === 'dying';
+  if (fight.phase !== 'wait') txt('ВРЕМЯ СТОИТ', 150, 4, 7, '#68b8f8', 'center');
+  if (inFight) {
+    const n = fight.maxHp, w = 14, gap = 2, x0 = 150 - (n * w + (n - 1) * gap) / 2;
+    txt(fight.def.name, 150, 17, 6, fight.def.col, 'center');
+    for (let i = 0; i < n; i++) { rect(x0 + i * (w + gap), 25, w, 4, '#101020'); rect(x0 + i * (w + gap) + 1, 26, w - 2, 2, i < fight.hp ? '#d83830' : '#40405a'); }
+  }
+  if (fight.phase === 'wait') {
+    const low = timeLeft < 15 && Math.floor(tTitle * 4) % 2 === 0;
+    txt('ВРЕМЯ ' + Math.ceil(timeLeft), 150, 3, 9, low ? '#d83830' : '#f0f0f0', 'center');
+  }
+  // прогресс
+  const bx = 205, bw = 88;
+  rect(bx, 6, bw, 4, '#101020'); rect(bx + 1, 7, bw - 2, 2, '#40405a');
+  const pr = Math.min(1, p.x / GOAL);
+  rect(bx + 1, 7, Math.round((bw - 2) * pr), 2, '#38a848');
+  rect(bx + Math.round((bw - 4) * pr), 4, 3, 7, '#f8d838');
+  rect(bx + bw + 1, 3, 2, 9, '#68b8f8');
+  txt('АВАНС ' + coinsGot * 10 + 'р  ПРЕМИЯ ' + bonusGot + '/3', 296, 17, 6, bonusGot === 3 ? '#38e858' : '#f8d838', 'right');
+  // эффекты
+  let ey = 19;
+  if (p.boost > 0)  { spr(SPR.energy, 5, ey); txt(p.boost.toFixed(1), 13, ey + 1, 7, '#68b8f8'); ey += 12; }
+  if (p.phones > 0) { spr(SPR.phones, 4, ey); txt(p.phones.toFixed(1), 17, ey, 7, '#f890b8'); }
+}
+
+function panel(y, h) { rect(30, y, W - 60, h, 'rgba(16,16,32,0.88)'); rect(30, y, W - 60, 1, '#f8d838'); rect(30, y + h - 1, W - 60, 1, '#f8d838'); }
+
+function drawTitle() {
+  panel(24, 152);
+  txt('ПОБЕГ ИЗ', 150, 30, 18, '#f8d838', 'center');
+  txt('БЮРОКРАТИИ', 150, 49, 18, '#f8d838', 'center');
+  txt('3 этажа до свободы. Собирай аванс и премии,', 150, 74, 7, '#f0f0f0', 'center');
+  txt('а в конце каждого этажа — босс:', 150, 83, 7, '#f0f0f0', 'center');
+  txt('прыгай ему на голову, чтобы победить!', 150, 92, 7, '#f8d838', 'center');
+  txt('← →  или  A D  — бежать', 150, 105, 7, '#68b8f8', 'center');
+  txt('ПРОБЕЛ / ↑ / W  — прыжок', 150, 114, 7, '#68b8f8', 'center');
+  txt('↓ / S  — подкат (под воздуховоды)', 150, 123, 7, '#68b8f8', 'center');
+  txt('P — пауза     M — звук', 150, 133, 7, '#8a8a9a', 'center');
+  if (Math.floor(tTitle * 2.5) % 2 === 0) txt('НАЖМИ  ENTER', 150, 146, 10, '#f0f0f0', 'center');
+  if (best) txt('Рекорд: ' + best, 150, 162, 6, '#f890b8', 'center');
+}
+
+function drawEnd() {
+  const win = state === 'win';
+  const blink = endT > 0.6 && Math.floor(tTitle * 2.5) % 2 === 0;
+  if (win) {
+    panel(22, 156);
+    const fin = floorNo >= FINAL_FLOOR;
+    txt(fin ? 'ТЫ СБЕЖАЛ ИЗ БЮРОКРАТИИ!' : 'ЭТАЖ ' + floorNo + ' ПРОЙДЕН!', 150, fin ? 30 : 29, fin ? 11 : 14, '#38e858', 'center');
+    txt('Время: ' + Math.ceil(timeLeft) + ' с  → +' + Math.round(timeLeft * 10), 150, 49, 7, '#f0f0f0', 'center');
+    txt('Жизни: ' + lives + '  → +' + lives * 100, 150, 58, 7, '#f0f0f0', 'center');
+    txt('Аванс: ' + coinsGot + ' монет  → +' + coinsGot * 10, 150, 67, 7, '#f8d838', 'center');
+    txt('Премия: ' + bonusGot + '/3  → +' + bonusGot * 300, 150, 76, 7, bonusGot === 3 ? '#38e858' : '#f0f0f0', 'center');
+    txt('Босс повержен  → +500', 150, 85, 7, '#d83830', 'center');
+    txt('За этаж: ' + floorScore + ' р.', 150, 97, 8, '#f0f0f0', 'center');
+    txt('ЗАРПЛАТА: ' + total, 150, 108, 11, '#f8d838', 'center');
+    txt('Звание: ' + rankOf(total), 150, 123, 8, '#f890b8', 'center');
+    txt('Рекорд: ' + best, 150, 134, 6, '#8a8a9a', 'center');
+    if (blink) txt(fin ? 'ENTER — играть снова' : 'ENTER — этаж ' + (floorNo + 1) + ' (сложнее!)', 150, 150, 8, '#f0f0f0', 'center');
+  } else {
+    panel(26, 148);
+    txt('УВОЛЕН!', 150, 33, 18, '#d83830', 'center');
+    txt(endMsg, 150, 60, 8, '#f0f0f0', 'center');
+    txt('Этаж: ' + floorNo, 150, 74, 8, '#f0f0f0', 'center');
+    txt('Аванс не выдан: ' + (coinsGot * 10 + bonusGot * 300) + ' р.', 150, 85, 7, '#f8d838', 'center');
+    txt('ЗАРПЛАТА: ' + total, 150, 98, 11, '#f8d838', 'center');
+    txt('Звание: ' + rankOf(total), 150, 114, 8, '#f890b8', 'center');
+    txt('Рекорд: ' + best, 150, 126, 6, '#8a8a9a', 'center');
+    if (blink) txt('ENTER — начать заново', 150, 142, 9, '#f0f0f0', 'center');
+  }
+}
+
+function render() {
+  ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+
+  if (state === 'title') {
+    const c = Math.round((tTitle * 60) % (WORLD - W));   // фон листает все четыре зоны
+    drawBG(c);
+    spr(SPR.player.r[Math.floor(tTitle * 8) % 2], 60, FLOOR - 14);
+    spr(SPR.col[0].l[Math.floor(tTitle * 6) % 2], 250, FLOOR - 14);
+    drawTitle();
+    return;
+  }
+
+  const cx = Math.round(cam);
+  let sx = 0, sy = 0;
+  if (shake > 0) { sx = Math.round((Math.random() - 0.5) * 3); sy = Math.round((Math.random() - 0.5) * 3); }
+  ctx.translate(sx, sy);
+
+  const open = state === 'win' ? 1 : (bossDead && p.x > GOAL - 60 ? 0.4 : 0);
+  drawBG(cx);
+  drawPuddles(cx);
+  drawLift(cx, open);
+  ents.forEach(e => drawEnt(e, cx));
+  drawBoss(cx);
+  drawShots(cx);
+  interns.forEach(s => drawIntern(s, cx));
+  folders.forEach(f => {
+    const fx = f.x - cx;
+    spr(SPR.folder, fx, f.y);
+    rect(fx + 12, f.y + 1, 4, 1, '#f0f0f0'); rect(fx + 14, f.y + 4, 3, 1, '#f0f0f0');
+  });
+  papers.forEach(s => { rect(s.x - cx, s.y, 5, 3, '#f0f0f0'); rect(s.x - cx, s.y + 1, 3, 1, '#8a8a9a'); });
+  if (state !== 'win') drawPlayer(cx);
+  particles.forEach(q => rect(q.x - cx, q.y, q.s, q.s, q.c));
+  for (const f of floaters) txt(f.s, f.x - cx + 4, f.y - f.t * 14, 8, f.c, 'center');
+
+  ctx.translate(-sx, -sy);
+
+  // события
+  if (ev && state === 'play') {
+    const px = p.x + 4 - cx, py = p.y - 8;                  // затемнение: виден только круг вокруг героя
+    const g = ctx.createRadialGradient(px, py, 16, px, py, 58);
+    g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,0.94)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = 'rgba(216,56,48,' + (0.12 + 0.08 * Math.sin(tTitle * 14)) + ')';   // красная аварийная подсветка
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  drawHUD();
+  if (toast && toast.t < 2.4) banner(toast.s, 19, '#f8d838');
+  if (ev && state === 'play') {
+    if (Math.floor(tTitle * 4) % 2 === 0) banner('!!! ПОЖАРНАЯ ТРЕВОГА !!!', 33, '#d83830');
+  }
+
+  if (state === 'play' && fight.phase === 'intro') drawBossIntro();
+  if (paused) { rect(0, 0, W, H, 'rgba(0,0,0,0.5)'); txt('ПАУЗА', 150, 90, 16, '#f8d838', 'center'); }
+  if (state === 'win' || state === 'lose') {
+    rect(0, 0, W, H, 'rgba(0,0,0,0.35)');
+    drawEnd();
+  }
+}
+
+// ---------- Масштабирование под окно ----------
+const tv = document.getElementById('tv');
+function fit() {
+  const s = Math.min(1, (innerWidth - 16) / tv.offsetWidth, (innerHeight - 16) / tv.offsetHeight);
+  tv.style.transform = 'scale(' + s + ')';
+}
+addEventListener('resize', fit); fit();
+
+// ---------- Главный цикл ----------
+let last = performance.now();
+function frame(t) {
+  const dt = Math.max(0, Math.min(0.033, (t - last) / 1000));
+  last = t;
+  update(dt); render();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// для отладки/автотестов
+window.__game = {
+  get state() { return state; }, get p() { return p; }, get lives() { return lives; }, get time() { return timeLeft; },
+  get floor() { return floorNo; }, get ents() { return ents; }, get coins() { return coinsGot; }, get bonus() { return bonusGot; },
+  get papers() { return papers; }, get interns() { return interns; }, get total() { return total; },
+  get fight() { return fight; }, get shots() { return shots; }, get folders() { return folders; }, get bossDead() { return bossDead; },
+  setFloor: n => { floorNo = n; startFloor(); },
+  start: startRun, next: nextFloor,
+  teleport: x => { p.x = x; cam = Math.max(0, Math.min(WORLD - W, x - 110)); },
+  event: k => { ev = { k, t: 0, dur: 6, beat: -1 }; },
+  setTime: t => { timeLeft = t; }
+};
+})();
+</script>
+</body>
+</html>
