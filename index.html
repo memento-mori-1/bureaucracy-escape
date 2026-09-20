@@ -393,6 +393,7 @@ const SFX = {
   throw_: () => tone(500, 0.12, 'sawtooth', 0.04, 220),
   zone:   () => { tone(523, 0.08, 'square', 0.04); tone(784, 0.14, 'square', 0.04, 0, 0.08); },
   blackout: () => tone(300, 0.5, 'sawtooth', 0.06, 40),
+  siren:  up => up ? tone(620, 0.55, 'sawtooth', 0.05, 980) : tone(980, 0.55, 'sawtooth', 0.05, 620),
   win:    () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, 0.16, 'square', 0.06, 0, i * 0.13)),
   lose:   () => [392, 330, 262, 196].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, 0, i * 0.2)),
   start:  () => [392, 523, 659].forEach((f, i) => tone(f, 0.1, 'square', 0.05, 0, i * 0.08)),
@@ -475,8 +476,11 @@ function onPress(code) {
 }
 
 // ---------- Управление касаниями (без нарисованных кнопок) ----------
-// Левая часть экрана: ведёшь палец влево/вправо — герой бежит (невидимый джойстик).
-// Правая часть: тап или свайп вверх — прыжок, свайп вниз — подкат.
+// Любой палец в любом месте экрана:
+//   веди влево/вправо — герой бежит (невидимый джойстик);
+//   быстрый взмах вверх — прыжок (взмах вправо-вверх / влево-вверх — прыжок по диагонали, пока палец ведёт в сторону);
+//   взмах вниз — подкат; короткий тап — прыжок.
+// Можно играть одним пальцем или двумя (один бежит, другой прыгает).
 // На заставке, экране битвы и итогах любое касание работает как Enter.
 let usedTouch = false;
 const isTouch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
@@ -484,17 +488,22 @@ const touchUI = () => usedTouch || isTouch;
 const goKey = () => touchUI() ? 'ТАП' : 'ENTER';
 const SWIPE = 22, DEAD = 12, TAP = 14, STICK = 30;    // пороги в пикселях экрана
 const pointers = new Map();
+let touchJumpUntil = 0;                                // минимальное «удержание» прыжка: тап/взмах всегда дают полный прыжок
 const screenEl = document.querySelector('.screen');
 const act = code => { if (state === 'play' && fight.phase !== 'intro') onPress(code); };   // жесты работают только в игре
+
+function refreshTouch() {                              // сводим состояние всех пальцев в общие «клавиши»
+  let l = false, r = false, j = false;
+  pointers.forEach(q => { if (q.dir < 0) l = true; if (q.dir > 0) r = true; if (q.hold) j = true; });
+  keys.TouchLeft = l; keys.TouchRight = r; keys.TouchJump = j;
+}
 
 screenEl.addEventListener('pointerdown', e => {
   e.preventDefault(); ensureAudio();
   if (e.pointerType !== 'mouse') usedTouch = true;
   try { screenEl.setPointerCapture(e.pointerId); } catch (_) {}
   if (state !== 'play' || fight.phase === 'intro') { onPress('Enter'); return; }
-  const r = screenEl.getBoundingClientRect();
-  const role = (e.clientX - r.left) / r.width < 0.45 ? 'move' : 'act';
-  pointers.set(e.pointerId, { role, x0: e.clientX, y0: e.clientY, done: false });
+  pointers.set(e.pointerId, { ox: e.clientX, oy: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), dir: 0, hold: false, done: false });
 }, { passive: false });
 
 screenEl.addEventListener('pointermove', e => {
@@ -503,26 +512,29 @@ screenEl.addEventListener('pointermove', e => {
   e.preventDefault();
   let dx = e.clientX - q.x0;
   const dy = e.clientY - q.y0;
-  if (q.role === 'move') {
-    // «плавающий» центр джойстика: чтобы развернуться, не нужно вести палец через весь экран
-    if (dx > STICK) { q.x0 = e.clientX - STICK; dx = STICK; }
-    else if (dx < -STICK) { q.x0 = e.clientX + STICK; dx = -STICK; }
-    keys.TouchLeft = dx < -DEAD; keys.TouchRight = dx > DEAD;
-  } else if (!q.done) {
-    if (dy < -SWIPE) { q.done = true; keys.TouchJump = true; act('Space'); }      // свайп вверх — прыжок (держишь — выше)
-    else if (dy > SWIPE) { q.done = true; act('ArrowDown'); }                      // свайп вниз — подкат
+  // «плавающий» центр джойстика: чтобы развернуться, не нужно вести палец через весь экран
+  if (dx > STICK) { q.x0 = e.clientX - STICK; dx = STICK; }
+  else if (dx < -STICK) { q.x0 = e.clientX + STICK; dx = -STICK; }
+  q.dir = dx > DEAD ? 1 : dx < -DEAD ? -1 : 0;
+  if (dy < -SWIPE) {                                   // взмах вверх — прыжок (бег в сторону при этом продолжается)
+    q.done = true; q.hold = true; touchJumpUntil = performance.now() + 250; act('Space'); q.y0 = e.clientY;
+  } else if (dy > SWIPE) {                             // взмах вниз — подкат
+    q.done = true; act('ArrowDown'); q.y0 = e.clientY;
+  } else {
+    q.y0 += (e.clientY - q.y0) * 0.12;                 // медленный дрейф пальца вверх/вниз за взмах не считается
   }
+  refreshTouch();
 }, { passive: false });
 
 function endPointer(e) {
   const q = pointers.get(e.pointerId);
   if (!q) return;
   pointers.delete(e.pointerId);
-  if (q.role === 'move') { keys.TouchLeft = false; keys.TouchRight = false; return; }
-  if (!q.done && Math.hypot(e.clientX - q.x0, e.clientY - q.y0) < TAP) {          // короткий тап — полный прыжок
-    act('Space'); keys.TouchJump = true;
-    setTimeout(() => { keys.TouchJump = false; }, 350);
-  } else keys.TouchJump = false;
+  const moved = Math.hypot(e.clientX - q.ox, e.clientY - q.oy);
+  if (!q.done && moved < TAP && performance.now() - q.t0 < 400) {     // короткий тап — прыжок
+    act('Space'); touchJumpUntil = performance.now() + 350;
+  }
+  refreshTouch();
 }
 screenEl.addEventListener('pointerup', e => { ensureAudio(); endPointer(e); });
 screenEl.addEventListener('pointercancel', endPointer);
@@ -825,7 +837,7 @@ function update(dt) {
   }
 
   const L = keys.ArrowLeft || keys.KeyA || keys.TouchLeft, R = keys.ArrowRight || keys.KeyD || keys.TouchRight;
-  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW || keys.TouchJump;
+  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW || keys.TouchJump || performance.now() < touchJumpUntil;
   const maxV = p.boost > 0 ? 130 : 85;
   const onPuddle = p.onGround && (floodT > 0 || puddles.some(q => p.x + 4 > q.x0 && p.x + 4 < q.x1));
 
@@ -990,8 +1002,8 @@ function update(dt) {
   if (ev) {
     ev.t += dt;
     if (ev.k === 'alarm') {
-      const beat = Math.floor(ev.t * 2.5);
-      if (beat !== ev.beat) { ev.beat = beat; tone(beat % 2 ? 880 : 660, 0.16, 'square', 0.03); }
+      const beat = Math.floor(ev.t / 0.55);
+      if (beat !== ev.beat) { ev.beat = beat; SFX.siren(beat % 2 === 0); }      // сирена воет вверх-вниз
     }
     if (ev.t >= ev.dur) { ev = null; evT = 14 + Math.random() * 8; }
   }
@@ -1038,7 +1050,7 @@ function update(dt) {
   floaters = floaters.filter(f => f.t < 1.1);
   updateParticles(dt);
 
-  musicTick(dt, trackFor());
+  if (!ev) musicTick(dt, trackFor());                      // во время пожарной тревоги фоновая музыка пропадает — слышна только сирена
 
   // лифт открывается только после победы над боссом
   if (bossDead && p.x + 4 >= GOAL + 12) endGame(true);
@@ -1365,9 +1377,10 @@ function drawTitle() {
   txt('а в конце каждого этажа — босс:', 150, 83, 7, '#f0f0f0', 'center');
   txt('прыгай ему на голову, чтобы победить!', 150, 92, 7, '#f8d838', 'center');
   if (touchUI()) {
-    txt('СЛЕВА: веди пальцем ← →  — бег', 150, 105, 7, '#68b8f8', 'center');
-    txt('СПРАВА: тап или свайп ↑  — прыжок', 150, 114, 7, '#68b8f8', 'center');
-    txt('СПРАВА: свайп ↓  — подкат', 150, 123, 7, '#68b8f8', 'center');
+    txt('ВЕДИ ПАЛЕЦ ← →  — бег', 150, 105, 7, '#68b8f8', 'center');
+    txt('ТАП или ВЗМАХ ↑  — прыжок (и по диагонали)', 150, 114, 7, '#68b8f8', 'center');
+    txt('ВЗМАХ ↓  — подкат', 150, 123, 7, '#68b8f8', 'center');
+    txt('Можно одним пальцем или двумя', 150, 133, 7, '#8a8a9a', 'center');
   } else {
     txt('← →  или  A D  — бежать', 150, 105, 7, '#68b8f8', 'center');
     txt('ПРОБЕЛ / ↑ / W  — прыжок', 150, 114, 7, '#68b8f8', 'center');
