@@ -33,6 +33,20 @@
   }
   .led { position: absolute; right: 44px; bottom: 16px; width: 10px; height: 10px; border-radius: 50%;
     background: #3ae06a; box-shadow: 0 0 8px #3ae06a; }
+  /* кнопки управления на сенсорных устройствах (размеры в пикселях экрана 900×600, он масштабируется вместе с рамкой) */
+  .pad { position: absolute; inset: 0; display: none; pointer-events: none; }
+  .pad.on { display: block; }
+  .btn {
+    position: absolute; bottom: 14px; width: 118px; height: 100px; box-sizing: border-box; border-radius: 24px;
+    background: rgba(240,240,240,.14); border: 3px solid rgba(240,240,240,.42); color: rgba(255,255,255,.8);
+    font: bold 46px "Courier New", monospace; display: flex; align-items: center; justify-content: center;
+    pointer-events: auto; touch-action: none;
+  }
+  .btn.down { background: rgba(248,216,56,.42); border-color: rgba(248,216,56,.9); color: #fff; }
+  .btn[data-k="left"] { left: 16px; }
+  .btn[data-k="right"] { left: 148px; }
+  .btn[data-k="slide"] { right: 182px; }
+  .btn[data-k="jump"] { right: 16px; width: 150px; }
   /* маленький экран (телефон в горизонтальном положении): тонкая рамка, чтобы игра была крупнее */
   @media (max-height: 520px) {
     .tv { padding: 8px; border-radius: 22px; }
@@ -51,7 +65,14 @@
 </head>
 <body>
 <div class="tv" id="tv">
-  <div class="screen"><canvas id="c" width="900" height="600"></canvas></div>
+  <div class="screen"><canvas id="c" width="900" height="600"></canvas>
+    <div class="pad" id="pad">
+      <div class="btn" data-k="left">◀</div>
+      <div class="btn" data-k="right">▶</div>
+      <div class="btn" data-k="slide">▼</div>
+      <div class="btn big" data-k="jump">▲</div>
+    </div>
+  </div>
   <div class="brand">HORIZONT</div><div class="led"></div>
 </div>
 <div class="rotate">ПОВЕРНИ ТЕЛЕФОН<br>ГОРИЗОНТАЛЬНО</div>
@@ -394,6 +415,7 @@ const SFX = {
   zone:   () => { tone(523, 0.08, 'square', 0.04); tone(784, 0.14, 'square', 0.04, 0, 0.08); },
   blackout: () => tone(300, 0.5, 'sawtooth', 0.06, 40),
   siren:  up => up ? tone(620, 0.55, 'sawtooth', 0.05, 980) : tone(980, 0.55, 'sawtooth', 0.05, 620),
+  door:   () => { tone(180, 0.18, 'square', 0.05, 110); tone(500, 0.3, 'triangle', 0.05, 1000, 0.12); },
   win:    () => [523, 659, 784, 1047, 784, 1047].forEach((f, i) => tone(f, 0.16, 'square', 0.06, 0, i * 0.13)),
   lose:   () => [392, 330, 262, 196].forEach((f, i) => tone(f, 0.25, 'triangle', 0.09, 0, i * 0.2)),
   start:  () => [392, 523, 659].forEach((f, i) => tone(f, 0.1, 'square', 0.05, 0, i * 0.08)),
@@ -418,9 +440,12 @@ const TRACKS = [
     bass: [40,0,52,0,40,0,52,0,  38,0,50,0,38,0,50,0,  36,0,48,0,36,0,48,0,  35,0,47,0,35,0,47,0] },
   { name: 'босс: зловещая тема', step: 0.14, lt: 'sawtooth', lv: 0.02, bt: 'sawtooth', bv: 0.045, drums: true,
     lead: [62,0,0,65,0,0,68,0,  63,0,0,66,0,0,69,0,  62,0,0,65,0,0,68,0,  68,0,67,0,66,0,65,0],
-    bass: [38,0,38,38,0,38,0,38,  39,0,39,39,0,39,0,39,  38,0,38,38,0,38,0,38,  44,0,44,44,0,44,0,44] }
+    bass: [38,0,38,38,0,38,0,38,  39,0,39,39,0,39,0,39,  38,0,38,38,0,38,0,38,  44,0,44,44,0,44,0,44] },
+  { name: 'касса: быстрая и звонкая', step: 0.1, lt: 'square', lv: 0.014, bt: 'triangle', bv: 0.04,
+    lead: [84,0,88,0,91,0,88,0,  86,0,89,0,93,0,89,0,  84,88,91,96,91,88,84,0,  79,0,83,0,86,0,91,0],
+    bass: [48,0,55,0,48,0,55,0,  50,0,57,0,50,0,57,0,  48,0,55,0,52,0,55,0,  43,0,50,0,43,0,50,0] }
 ];
-const BOSS_TRACK = 3;
+const BOSS_TRACK = 3, BONUS_TRACK = 4;
 let musicT = 0, musicStep = 0, musicTrack = -1;
 function musicTick(dt, ti) {
   if (ti === null) return;
@@ -468,6 +493,7 @@ function onPress(code) {
   if (state === 'win')   { if (go && endT > 0.6) { if (floorNo >= FINAL_FLOOR) startRun(); else nextFloor(); } return; }
   if (state === 'lose')  { if (go && endT > 0.6) startRun(); return; }
   if (state === 'play') {
+    if (bonus && bonus.phase !== 'play') { if (go && bonus.phase === 'result' && bonus.t > 0.8) exitBonus(); return; }   // итоги комнаты можно пропустить
     if (fight.phase === 'intro') { if (go && fight.t > 0.9) startFight(); return; }   // экран битвы можно пропустить
     if (code === 'KeyP') paused = !paused;
     if (JUMP.includes(code)) p.jumpBuf = 0.12;
@@ -475,69 +501,62 @@ function onPress(code) {
   }
 }
 
-// ---------- Управление касаниями (без нарисованных кнопок) ----------
-// Любой палец в любом месте экрана:
-//   веди влево/вправо — герой бежит (невидимый джойстик);
-//   быстрый взмах вверх — прыжок (взмах вправо-вверх / влево-вверх — прыжок по диагонали, пока палец ведёт в сторону);
-//   взмах вниз — подкат; короткий тап — прыжок.
-// Можно играть одним пальцем или двумя (один бежит, другой прыгает).
-// На заставке, экране битвы и итогах любое касание работает как Enter.
+// ---------- Управление касаниями: кнопки на экране ----------
+// Слева ◀ ▶ (бег), справа большой ▲ (прыжок; держишь — выше) и ▼ (подкат).
+// Кнопки видны только на сенсорных устройствах и только во время игры. Палец можно перетаскивать с кнопки на кнопку,
+// а несколько пальцев работают одновременно (бежать и прыгать сразу).
+// На заставке, экране битвы и итогах любое касание экрана работает как Enter.
 let usedTouch = false;
 const isTouch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
 const touchUI = () => usedTouch || isTouch;
 const goKey = () => touchUI() ? 'ТАП' : 'ENTER';
-const SWIPE = 22, DEAD = 12, TAP = 14, STICK = 30;    // пороги в пикселях экрана
-const pointers = new Map();
-let touchJumpUntil = 0;                                // минимальное «удержание» прыжка: тап/взмах всегда дают полный прыжок
+const padHeld = new Map();                             // палец → какая кнопка под ним ('left' | 'right' | 'jump' | 'slide' | null)
+let touchJumpUntil = 0;                                // минимальное «удержание» прыжка: даже короткий тап даёт полный прыжок
+let padOn = false;
 const screenEl = document.querySelector('.screen');
-const act = code => { if (state === 'play' && fight.phase !== 'intro') onPress(code); };   // жесты работают только в игре
+const padEl = document.getElementById('pad');
+const act = code => { if (state === 'play' && fight.phase !== 'intro') onPress(code); };   // кнопки работают только в игре
 
-function refreshTouch() {                              // сводим состояние всех пальцев в общие «клавиши»
-  let l = false, r = false, j = false;
-  pointers.forEach(q => { if (q.dir < 0) l = true; if (q.dir > 0) r = true; if (q.hold) j = true; });
-  keys.TouchLeft = l; keys.TouchRight = r; keys.TouchJump = j;
+function padKeyAt(x, y) {                              // какая кнопка под пальцем
+  const el = document.elementFromPoint(x, y), b = el && el.closest ? el.closest('.btn') : null;
+  return b ? b.dataset.k : null;
+}
+function refreshPad() {                                // сводим все пальцы в общие «клавиши» и подсвечиваем нажатые кнопки
+  const vals = [...padHeld.values()];
+  keys.TouchLeft = vals.includes('left'); keys.TouchRight = vals.includes('right'); keys.TouchJump = vals.includes('jump');
+  padEl.querySelectorAll('.btn').forEach(b => b.classList.toggle('down', vals.includes(b.dataset.k)));
+}
+function padApply(id, k) {
+  if (padHeld.get(id) === k) return;
+  padHeld.set(id, k);
+  if (k === 'jump') { act('Space'); touchJumpUntil = performance.now() + 250; }
+  else if (k === 'slide') act('ArrowDown');
+  refreshPad();
+}
+function updatePad() {                                 // показывать кнопки только когда идёт сама игра
+  const on = touchUI() && state === 'play' && fight.phase !== 'intro' && !(bonus && bonus.phase !== 'play');
+  if (on === padOn) return;
+  padOn = on; padEl.classList.toggle('on', on);
+  if (!on) { padHeld.clear(); refreshPad(); }
 }
 
 screenEl.addEventListener('pointerdown', e => {
   e.preventDefault(); ensureAudio();
   if (e.pointerType !== 'mouse') usedTouch = true;
+  if (state !== 'play' || fight.phase === 'intro' || (bonus && bonus.phase !== 'play')) { onPress('Enter'); return; }
+  const k = padKeyAt(e.clientX, e.clientY);
+  if (!k) return;
   try { screenEl.setPointerCapture(e.pointerId); } catch (_) {}
-  if (state !== 'play' || fight.phase === 'intro') { onPress('Enter'); return; }
-  pointers.set(e.pointerId, { ox: e.clientX, oy: e.clientY, x0: e.clientX, y0: e.clientY, t0: performance.now(), dir: 0, hold: false, done: false });
+  padApply(e.pointerId, k);
 }, { passive: false });
-
 screenEl.addEventListener('pointermove', e => {
-  const q = pointers.get(e.pointerId);
-  if (!q) return;
+  if (!padHeld.has(e.pointerId)) return;
   e.preventDefault();
-  let dx = e.clientX - q.x0;
-  const dy = e.clientY - q.y0;
-  // «плавающий» центр джойстика: чтобы развернуться, не нужно вести палец через весь экран
-  if (dx > STICK) { q.x0 = e.clientX - STICK; dx = STICK; }
-  else if (dx < -STICK) { q.x0 = e.clientX + STICK; dx = -STICK; }
-  q.dir = dx > DEAD ? 1 : dx < -DEAD ? -1 : 0;
-  if (dy < -SWIPE) {                                   // взмах вверх — прыжок (бег в сторону при этом продолжается)
-    q.done = true; q.hold = true; touchJumpUntil = performance.now() + 250; act('Space'); q.y0 = e.clientY;
-  } else if (dy > SWIPE) {                             // взмах вниз — подкат
-    q.done = true; act('ArrowDown'); q.y0 = e.clientY;
-  } else {
-    q.y0 += (e.clientY - q.y0) * 0.12;                 // медленный дрейф пальца вверх/вниз за взмах не считается
-  }
-  refreshTouch();
+  padApply(e.pointerId, padKeyAt(e.clientX, e.clientY));
 }, { passive: false });
-
-function endPointer(e) {
-  const q = pointers.get(e.pointerId);
-  if (!q) return;
-  pointers.delete(e.pointerId);
-  const moved = Math.hypot(e.clientX - q.ox, e.clientY - q.oy);
-  if (!q.done && moved < TAP && performance.now() - q.t0 < 400) {     // короткий тап — прыжок
-    act('Space'); touchJumpUntil = performance.now() + 350;
-  }
-  refreshTouch();
-}
-screenEl.addEventListener('pointerup', e => { ensureAudio(); endPointer(e); });
-screenEl.addEventListener('pointercancel', endPointer);
+function padRelease(e) { if (padHeld.delete(e.pointerId)) refreshPad(); }
+screenEl.addEventListener('pointerup', e => { ensureAudio(); padRelease(e); });
+screenEl.addEventListener('pointercancel', padRelease);
 screenEl.addEventListener('contextmenu', e => e.preventDefault());
 
 // ---------- Состояние ----------
@@ -554,6 +573,10 @@ let state = 'title', paused = false, endT = 0, tTitle = 0;
 let p, cam = 0, ents = [], folders = [], papers = [], interns = [], puddles = [], floaters = [], particles = [];
 let timeLeft = 0, timeLimit = 80, lives = MAX_LIVES, spawnT = 0, internT = 0, evT = 0, ev = null, shake = 0;
 let fight = null, shots = [], floodT = 0, bossDead = false;
+let secret = null, bonus = null;         // секретная золотая дверь «КАССА» этажа и текущая бонусная комната
+const SECRET_DOOR = [12, 6, 28];         // номер двери (x = номер·140 + 92): 1-й этаж — Кадры, 2-й — Бухгалтерия, 3-й — Кабинет директора
+const BONUS_TIME = 10;                   // секунд на сбор монет
+const BONUS_COIN_VALUE = 10;             // «аванс» за монету (как обычная монета)
 let floorNo = 1, total = 0, floorScore = 0, coinsGot = 0, bonusGot = 0, coinChain = 0, coinT = 0, curZone = -1, toast = null, endMsg = '', best = 0;
 
 try { best = +localStorage.getItem('bureau_best') || 0; } catch (e) {}
@@ -647,6 +670,12 @@ function buildLevel(fl) {
     const n = 3 + Math.floor(rnd() * 3);
     for (let i = 0; i < n; i++) ents.push(coin(cx + i * 12, 4));
   }
+  // секретная дверь: вокруг неё расчищаем место, оставляем одну монету-подсказку
+  const di = SECRET_DOOR[Math.min(fl, FINAL_FLOOR) - 1], dxw = di * 140 + 92;
+  secret = { i: di, x: dxw, used: false, prog: 0 };
+  ents = ents.filter(e => !(e.x > dxw - 70 && e.x < dxw + 90));
+  puddles = puddles.filter(q => !(q.x1 > dxw - 80 && q.x0 < dxw + 100));
+  ents.push(coin(dxw + 8, 4));
   ents.sort((a, b) => a.x - b.x);
 }
 
@@ -658,7 +687,7 @@ function startFloor() {
   const def = BOSSES[Math.min(floorNo, FINAL_FLOOR) - 1];
   fight = { def, phase: 'wait', t: 0, x: BOSS_MAX, y: FLOOR - 17, w: 8, h: 17, hp: def.hp, maxHp: def.hp, face: -1, dir: -1,
             atkT: 1.4, atkN: 0, stun: 0, inv: 0, shout: 0, shoutS: '', mode: 'walk', tel: 0, dead: 0, queue: [] };
-  shots = []; floodT = 0; bossDead = false;
+  shots = []; floodT = 0; bossDead = false; bonus = null;
   timeLimit = Math.max(66, 80 - 4 * (floorNo - 1));
   timeLeft = timeLimit;
   p = { x: 16, y: FLOOR, vx: 0, vy: 0, onGround: true, face: 1, anim: 0, jumpBuf: 0, slideBuf: 0, coyote: 0,
@@ -707,6 +736,85 @@ function hurt(kind, fromX) {
   p.kb = kbT; p.vx = vx * dir; p.vy = vy; p.onGround = false; p.slide = 0; shake = 0.25;
 }
 
+// ---------- Секретная комната «Касса» ----------
+function updateSecretDoor(dt) {                 // постоять перед золотой дверью секунду — и ты внутри
+  const s = secret, cxp = p.x + 4;
+  const standing = p.onGround && cxp > s.x + 1 && cxp < s.x + 21 && Math.abs(p.vx) < 10 && p.slide <= 0 && p.kb <= 0;
+  s.prog = standing ? s.prog + dt : Math.max(0, s.prog - dt * 2);
+  if (s.prog >= 1) enterBonus();
+}
+
+// Блоки комнаты (up — высота верхней грани над полом): лестница из четырёх блоков слева к премии и полка справа.
+// Прыжок достаёт на 37 px, поэтому каждая следующая ступенька выше предыдущей на 22 px.
+const BONUS_BLOCKS = [
+  { x: 30, w: 32, up: 24 }, { x: 78, w: 32, up: 46 }, { x: 126, w: 32, up: 68 }, { x: 174, w: 32, up: 90 },
+  { x: 228, w: 44, up: 26 }
+];
+
+function buildBonusRoom() {
+  const coins = []; let n = 0;
+  const add = (x, up) => coins.push({ x, y: FLOOR - up - 6, w: 6, h: 6, taken: false, ph: (n++) * 0.7 });
+  for (let x = 20; x <= 272; x += 12) add(x, 4);                                           // нижний ряд — просто бежать
+  [0, 1, 2, 4].forEach(k => {                                                              // монеты на блоках — надо запрыгивать
+    const bl = BONUS_BLOCKS[k], cnt = k === 4 ? 4 : 3;
+    for (let i = 0; i < cnt; i++) add(bl.x + 4 + i * 10, bl.up + 2);
+  });
+  add(70, 58); add(118, 80); add(166, 102);                                                // монеты «в полёте» между ступеньками
+  const blocks = BONUS_BLOCKS.map(b => ({ x: b.x, y: FLOOR - b.up, w: b.w, h: 8 }));
+  const top = BONUS_BLOCKS[3];                                                             // премия — на самом верхнем блоке
+  const bill = { x: top.x + 11, y: FLOOR - top.up - 7, w: 10, h: 7, taken: false };
+  return { coins, blocks, bill };
+}
+
+function enterBonus() {
+  secret.used = true; secret.prog = 0;
+  const room = buildBonusRoom(), coins = room.coins;
+  bonus = { phase: 'intro', t: 0, time: BONUS_TIME, got: 0, total: coins.length, coins, blocks: room.blocks, bill: room.bill,
+            gotBill: false, perfect: false, returnX: secret.x + 6 };
+  folders = []; papers = []; interns = []; shots = []; particles = []; floaters = [];
+  ev = null; evT = 14 + Math.random() * 8;
+  p.x = 24; p.y = FLOOR; p.vx = 0; p.vy = 0; p.onGround = true; p.slide = 0; p.kb = 0; p.inv = 0; p.face = 1;
+  cam = 0; coinChain = 0; coinT = 0; toast = null;
+  SFX.door();
+}
+
+function updateBonus(dt, pb) {                  // идёт сама игра в комнате (фазы «вступление» и «итоги» обрабатываются выше)
+  const b = bonus;
+  b.time -= dt;
+  if (p.x > W - 8) { p.x = W - 8; if (p.vx > 0) p.vx = 0; }
+  for (const c of b.coins) {
+    if (!c.taken && rectHit(pb, c)) {
+      c.taken = true; b.got++;
+      coinChain = coinT > 0 ? coinChain + 1 : 0; coinT = 0.5;
+      burst(c.x + 3, c.y + 3, 4, ['#f8d838', '#f0f0f0'], 40, 0); SFX.coin(coinChain);
+    }
+  }
+  if (!b.bill.taken && rectHit(pb, b.bill)) {                                        // премия под потолком
+    b.bill.taken = true; b.gotBill = true; bonusGot++;
+    floater(p.x, p.y - 22, 'ПРЕМИЯ! +300р', '#38e858');
+    burst(b.bill.x + 5, b.bill.y + 3, 14, ['#38e858', '#f8d838', '#f0f0f0'], 75, 0); SFX.bonus();
+  }
+  for (const f of floaters) f.t += dt;
+  floaters = floaters.filter(f => f.t < 1.1);
+  updateParticles(dt);
+  musicTick(dt, BONUS_TRACK);
+  if (b.time <= 0) {
+    b.time = 0; b.phase = 'result'; b.t = 0; b.perfect = b.got === b.total;
+    coinsGot += b.got + (b.perfect ? 20 : 0);           // идеальный сбор = ещё +200 р.
+    SFX.bonus();
+  }
+}
+
+function exitBonus() {
+  const b = bonus; bonus = null;
+  p.x = b.returnX; p.y = FLOOR; p.vx = 0; p.vy = 0; p.onGround = true; p.slide = 0; p.kb = 0; p.face = 1; p.inv = 1.5;
+  cam = Math.max(0, Math.min(WORLD - W, p.x - 110));
+  spawnT = 3; internT = 8;
+  const cash = b.got * BONUS_COIN_VALUE + (b.perfect ? 200 : 0) + (b.gotBill ? 300 : 0);
+  toast = { s: cash ? 'КАССА: +' + cash + ' р.' : 'КАССА ПУСТА...', t: 0 };
+  SFX.door();
+}
+
 // ---------- Битва с боссом ----------
 function enterArena() {
   fight.phase = 'intro'; fight.t = 0;
@@ -731,19 +839,20 @@ function bossAttack(rage) {
       b.mode = 'tel'; b.tel = 0.9;
     } else {                               // уборщица: весь пол мокрый + очередь из швабр
       floodT = 5;
-      [0, 0.55, 1.1].forEach((dl, i) => b.queue.push({ d: dl, s: { t: 'mop', x: b.x - 4, y: i === 1 ? FLOOR - 16 : FLOOR - 4, w: 14, h: 4, vx: -(sp + 25) } }));
+      [0, 0.55, 1.1].forEach((dl, i) => b.queue.push({ d: dl, s: { t: 'mop', x: b.x - 4, y: i === 1 ? FLOOR - 14 : FLOOR - 4, w: 14, h: 4, vx: -(sp + 25), mid: i === 1 } }));
     }
     return;
   }
   b.shoutS = d.atk; b.shout = 1.2;
   SFX.throw_();
   const mid = PATTERN[b.atkN % PATTERN.length];
-  if (d.kind === 'calc')       shots.push({ t: 'calc', x: b.x - 2, y: mid ? FLOOR - 22 : FLOOR - 9, w: 8, h: 9, vx: -sp });
-  else if (d.kind === 'chart') shots.push({ t: 'chart', x: b.x - 2, y: mid ? FLOOR - 22 : FLOOR - 8, w: 10, h: 8, vx: -sp - 10 });
+  // «высокие» снаряды летят на уровне груди: стоящего героя задевают, а под ними можно проехать подкатом (↓ / свайп вниз)
+  if (d.kind === 'calc')       shots.push({ t: 'calc', x: b.x - 2, y: mid ? FLOOR - 19 : FLOOR - 9, w: 8, h: 9, vx: -sp, mid: !!mid });
+  else if (d.kind === 'chart') shots.push({ t: 'chart', x: b.x - 2, y: mid ? FLOOR - 18 : FLOOR - 8, w: 10, h: 8, vx: -sp - 10, mid: !!mid });
   else if (b.atkN % 3 === 2)   { // тряпка по дуге: где упадёт, там будет лужа
     const flight = 2 * 130 / 300;
     shots.push({ t: 'rag', x: b.x, y: b.y, w: 6, h: 4, vx: Math.max(-150, Math.min(-30, ((p.x + 4) - b.x) / flight)), vy: -130 });
-  } else shots.push({ t: 'mop', x: b.x - 6, y: mid ? FLOOR - 16 : FLOOR - 4, w: 14, h: 4, vx: -sp });
+  } else shots.push({ t: 'mop', x: b.x - 6, y: mid ? FLOOR - 14 : FLOOR - 4, w: 14, h: 4, vx: -sp, mid: !!mid });
 }
 
 function stompBoss() {
@@ -827,11 +936,22 @@ function update(dt) {
   if (state === 'win' || state === 'lose') { endT += dt; shake = Math.max(0, shake - dt); updateParticles(dt); return; }
   if (state !== 'play' || paused) return;
 
+  // секретная комната: вступление и итоги замирают, играется только фаза «play»
+  if (bonus && bonus.phase !== 'play') {
+    bonus.t += dt; updateParticles(dt);
+    for (const f of floaters) f.t += dt;
+    floaters = floaters.filter(f => f.t < 1.1);
+    musicTick(dt, BONUS_TRACK);
+    if (bonus.phase === 'intro' && bonus.t > 1.8) { bonus.phase = 'play'; bonus.t = 0; }
+    else if (bonus.phase === 'result' && bonus.t > 3.5) exitBonus();
+    return;
+  }
+
   // выход на арену: игра замирает, показывается экран битвы с боссом
   if (fight.phase === 'wait' && p.x >= ARENA_X) enterArena();
   if (fight.phase === 'intro') { fight.t += dt; updateParticles(dt); musicTick(dt, BOSS_TRACK); if (fight.t > 3.5) startFight(); return; }
 
-  if (fight.phase === 'wait') {      // с момента встречи с боссом время стоит до конца этажа
+  if (fight.phase === 'wait' && !bonus) {      // с момента встречи с боссом время стоит до конца этажа (и в секретной комнате тоже)
     timeLeft -= dt;
     if (timeLeft <= 0) { timeLeft = 0; endGame(false, 'Рабочий день закончился!'); return; }
   }
@@ -852,7 +972,7 @@ function update(dt) {
   if (wasSliding && p.slide <= 0) {
     // нельзя вставать, пока над головой воздуховод
     const st = { x: p.x + 1, y: p.y - 14, w: 6, h: 14 };
-    if (ents.some(e => e.t === 'duct' && rectHit(st, { x: e.x + 1, y: e.y, w: e.w - 2, h: e.h }))) p.slide = 0.03;
+    if (!bonus && ents.some(e => e.t === 'duct' && rectHit(st, { x: e.x + 1, y: e.y, w: e.w - 2, h: e.h }))) p.slide = 0.03;
     else p.slideCd = 0.25;
   }
   p.slideCd = Math.max(0, p.slideCd - dt);
@@ -894,9 +1014,26 @@ function update(dt) {
   p.x += p.vx * dt;
   if (p.x < cam) { p.x = cam; if (p.vx < 0) p.vx = 0; }
   if (p.x > WORLD - 8) p.x = WORLD - 8;
+  if (bonus) {                           // блоки в секретной комнате сплошные: сбоку упираемся в стенку
+    for (const bl of bonus.blocks) {
+      if (p.y - 14 < bl.y + bl.h && p.y > bl.y && p.x + 7 > bl.x && p.x + 1 < bl.x + bl.w) {
+        p.x = p.x + 4 < bl.x + bl.w / 2 ? bl.x - 7 : bl.x + bl.w - 1;
+        p.vx = 0;
+      }
+    }
+  }
   p.vy += 700 * dt;
+  const prevY = p.y;
   p.y += p.vy * dt;
-  if (p.y >= FLOOR) { p.y = FLOOR; p.vy = 0; p.onGround = true; } else p.onGround = false;
+  let ground = p.y >= FLOOR ? FLOOR : null;
+  if (bonus) {                           // ... сверху на них можно встать, а снизу ударяешься головой
+    for (const bl of bonus.blocks) {
+      if (p.x + 7 <= bl.x || p.x + 1 >= bl.x + bl.w) continue;
+      if (p.vy >= 0 && prevY <= bl.y && p.y >= bl.y) { if (ground === null || bl.y < ground) ground = bl.y; }
+      else if (p.vy < 0 && prevY - 14 >= bl.y + bl.h && p.y - 14 < bl.y + bl.h) { p.y = bl.y + bl.h + 14; p.vy = 0; }
+    }
+  }
+  if (ground !== null) { p.y = ground; p.vy = 0; p.onGround = true; } else p.onGround = false;
   if (wasAir && p.onGround && vyBefore > 60) burst(p.x + 4, FLOOR - 1, 5, ['#8a8a9a', '#f0f0f0'], 30, 0);
   p.anim += dt * Math.abs(p.vx) / 85;
 
@@ -908,15 +1045,19 @@ function update(dt) {
   }
 
   // камера
-  const target = fight.phase !== 'wait' ? WORLD - W : Math.max(0, Math.min(WORLD - W, p.x - 110));
+  const target = bonus ? 0 : fight.phase !== 'wait' ? WORLD - W : Math.max(0, Math.min(WORLD - W, p.x - 110));
   cam += (target - cam) * Math.min(1, dt * 8);
 
   // смена зоны
   const z = zoneOf(p.x + 4);
-  if (z !== curZone) { curZone = z; toast = { s: THEMES[z].name, t: 0 }; SFX.zone(); }
+  if (!bonus && z !== curZone) { curZone = z; toast = { s: THEMES[z].name, t: 0 }; SFX.zone(); }
   if (toast) { toast.t += dt; if (toast.t > 2.4) toast = null; }
 
-  const pb = p.slide > 0 ? { x: p.x - 3, y: p.y - 8, w: 14, h: 8 } : { x: p.x + 1, y: p.y - 14, w: 6, h: 14 };
+  // при подкате герой ниже (зазор под высокими снарядами побольше, чем видно на глаз — так прощает неточность)
+  const pb = p.slide > 0 ? { x: p.x - 3, y: p.y - 6, w: 14, h: 6 } : { x: p.x + 1, y: p.y - 14, w: 6, h: 14 };
+
+  if (bonus) { updateBonus(dt, pb); return; }                                          // в секретной комнате мира вокруг нет
+  if (secret && !secret.used && fight.phase === 'wait') updateSecretDoor(dt);          // стоишь у золотой двери — заходишь
 
   // динамические лужи (след уборщицы)
   for (const q of puddles) if (q.exp !== undefined) q.exp -= dt;
@@ -1087,12 +1228,110 @@ function banner(s, y, col) {
   txt(s, 150, y, 8, col, 'center');
 }
 
-function drawDoor(dx, th) {
+function drawDoor(dx, th, gold) {
   rect(dx - 1, FLOOR - 47, 24, 47, '#101020');
-  rect(dx, FLOOR - 46, 22, 46, th.door);
-  rect(dx + 3, FLOOR - 42, 16, 18, th.doorIn);
-  rect(dx + 17, FLOOR - 22, 2, 2, '#f8d838');
-  rect(dx + 5, FLOOR - 52, 12, 4, '#d8d0b0');
+  rect(dx, FLOOR - 46, 22, 46, gold ? '#d8a838' : th.door);
+  rect(dx + 3, FLOOR - 42, 16, 18, gold ? '#a87a20' : th.doorIn);
+  rect(dx + 17, FLOOR - 22, 2, 2, gold ? '#f0f0f0' : '#f8d838');
+  if (!gold) { rect(dx + 5, FLOOR - 52, 12, 4, '#d8d0b0'); return; }
+  // секретная золотая дверь «КАССА»: вывеска, мигающий знак рубля и полоска света из-под двери
+  const blink = Math.floor(tTitle * 2) % 2 === 0;
+  rect(dx - 2, FLOOR - 60, 26, 10, '#101020'); rect(dx - 1, FLOOR - 59, 24, 8, '#3a2a08');
+  txt('КАССА', dx + 11, FLOOR - 59, 6, '#f8d838', 'center', false);
+  txt('Р', dx + 11, FLOOR - 39, 12, blink ? '#fff2a0' : '#8a5a10', 'center', false);
+  if (blink) rect(dx + 1, FLOOR - 2, 20, 2, '#fff2a0');
+}
+
+// Круглая монета 7×7, вращается: анфас → эллипс → ребро → эллипс (кадры 7, 5, 3 и 5 пикселей в ширину)
+const COIN_PAL = { Y: '#f8d838', D: '#d8a838', W: '#f0f0f0' };
+const COIN_FRAMES = [
+  makeSprite(['..KKK..', '.KYYYK.', 'KYWYYYK', 'KYYDYYK', 'KYYDYDK', '.KYYYK.', '..KKK..'], COIN_PAL),
+  makeSprite(['.KKK.', 'KYYYK', 'KYDYK', 'KYDYK', 'KYDYK', 'KYYYK', '.KKK.'], COIN_PAL),
+  makeSprite(['.K.', 'KDK', 'KDK', 'KDK', 'KDK', 'KDK', '.K.'], COIN_PAL),
+  makeSprite(['.KKK.', 'KYYYK', 'KDYYK', 'KDYYK', 'KDYYK', 'KYYYK', '.KKK.'], COIN_PAL)
+];
+function drawCoinAt(sx, y, ph) {
+  const img = COIN_FRAMES[Math.floor(tTitle * 6 + ph) % 4];
+  spr(img, sx + Math.floor((7 - img.width) / 2), y);
+}
+
+function drawSecretRing(cx) {                  // кольцо над золотой дверью заполняется, пока стоишь
+  if (!secret || secret.used || secret.prog < 0.03) return;
+  const x = secret.x - cx + 11, y = FLOOR - 72;
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(16,16,32,0.8)'; ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
+  ctx.strokeStyle = '#f8d838'; ctx.beginPath();
+  ctx.arc(x, y, 6, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, secret.prog)); ctx.stroke();
+}
+
+function drawBonusBG() {                       // золотая касса: хранилище с монетами
+  rect(0, 0, W, FLOOR, '#2e2410');
+  rect(0, 0, W, 12, '#1a1408'); rect(0, 12, W, 1, '#d8a838');
+  for (let y = 26; y < FLOOR; y += 16) rect(0, y, W, 1, '#3e3216');
+  for (let r = 0, y = 26; y < FLOOR; y += 16, r++) for (let x = (r % 2) * 20; x < W; x += 40) rect(x, y, 1, 16, '#3e3216');
+  rect(90, 20, 120, 16, '#101020'); rect(92, 22, 116, 12, '#3a2a08');
+  txt('КАССА', 150, 22, 10, '#f8d838', 'center', false);
+  const bl = Math.floor(tTitle * 3) % 2 === 0;
+  for (const bx of [30, 246]) { rect(bx, 52, 24, 30, '#101020'); rect(bx + 2, 54, 20, 26, bl ? '#3a2a08' : '#4a3a10'); txt('Р', bx + 12, 58, 14, '#d8a838', 'center', false); }
+  for (const px of [4, 274]) for (let k = 0; k < 5; k++) { rect(px, FLOOR - 4 - k * 3, 20, 3, '#101020'); rect(px + 1, FLOOR - 4 - k * 3, 18, 2, k % 2 ? '#d8a838' : '#f8d838'); }   // кучки монет
+  rect(0, FLOOR, W, H - FLOOR, '#5a4a20'); rect(0, FLOOR, W, 2, '#d8a838');
+  for (let x = 0; x < W; x += 30) rect(x, FLOOR + 2, 1, H - FLOOR, '#3e3216');
+  rect(0, FLOOR + 20, W, 1, '#3e3216');
+}
+
+function drawBonusHUD() {
+  const b = bonus;
+  rect(0, 0, W, 15, 'rgba(16,16,32,0.75)');
+  txt('КАССА', 6, 4, 7, '#f8d838');
+  const t = b.phase === 'intro' ? BONUS_TIME : b.time;
+  txt(t.toFixed(1) + ' с', 150, 2, 11, t < 3 && b.phase === 'play' && Math.floor(tTitle * 6) % 2 === 0 ? '#d83830' : '#f0f0f0', 'center');
+  txt('МОНЕТ ' + b.got + '/' + b.total, 294, 4, 7, '#f8d838', 'right');
+}
+
+function drawBonusBlocks() {
+  for (const b of bonus.blocks) {
+    rect(b.x, b.y, b.w, b.h, '#101020');
+    rect(b.x + 1, b.y + 1, b.w - 2, b.h - 2, '#c89a30');
+    rect(b.x + 1, b.y + 1, b.w - 2, 1, '#f8d838');                                     // блик сверху
+    for (let x = b.x + 8; x < b.x + b.w - 1; x += 8) rect(x, b.y + 2, 1, b.h - 3, '#8a6a1a');   // швы кирпичей
+    rect(b.x + 1, b.y + b.h - 2, b.w - 2, 1, '#8a6a1a');
+  }
+}
+
+function renderBonus() {
+  const b = bonus;
+  drawBonusBG();
+  drawBonusBlocks();
+  b.coins.forEach(c => { if (!c.taken) drawCoinAt(c.x, c.y, c.ph); });
+  if (!b.bill.taken) {                                                                 // премия под потолком: покачивается и мерцает
+    const by = b.bill.y + Math.round(Math.sin(tTitle * 4) * 1.5);
+    if (Math.floor(tTitle * 6) % 2 === 0) rect(b.bill.x - 2, by - 2, 14, 11, 'rgba(255,242,160,0.25)');
+    spr(SPR.bill, b.bill.x, by);
+  }
+  drawPlayer(0);
+  particles.forEach(q => rect(q.x, q.y, q.s, q.s, q.c));
+  for (const f of floaters) txt(f.s, f.x + 4, f.y - f.t * 14, 8, f.c, 'center');
+  drawBonusHUD();
+  if (b.phase === 'intro') {
+    rect(0, 0, W, H, 'rgba(0,0,0,0.6)');
+    txt('КАССА!', 150, 52, 18, '#f8d838', 'center');
+    txt('Собери как можно больше монет', 150, 80, 7, '#f0f0f0', 'center');
+    txt('за ' + BONUS_TIME + ' секунд!', 150, 89, 7, '#f0f0f0', 'center');
+    txt('Прыгай по блокам: наверху ждёт премия!', 150, 100, 7, '#38e858', 'center');
+    txt(String(Math.max(1, Math.ceil((1.8 - b.t) / 0.6))), 150, 114, 22, '#f8d838', 'center');
+  } else if (b.phase === 'result') {
+    rect(0, 0, W, H, 'rgba(0,0,0,0.45)');
+    panel(34, 118);
+    txt('ВРЕМЯ ВЫШЛО!', 150, 40, 12, '#f8d838', 'center');
+    txt('Собрано: ' + b.got + ' из ' + b.total, 150, 58, 8, '#f0f0f0', 'center');
+    const cash = b.got * BONUS_COIN_VALUE;
+    txt('+' + cash + ' р.', 150, 70, 14, '#f8d838', 'center');
+    if (b.perfect) txt('ИДЕАЛЬНО! ВСЕ МОНЕТЫ  +200 р.', 150, 90, 7, '#38e858', 'center');
+    else txt(b.got >= b.total * 0.6 ? 'Отличная работа!' : 'Можно быстрее...', 150, 90, 7, '#8a8a9a', 'center');
+    if (b.gotBill) txt('ПРЕМИЯ У ПОТОЛКА!  +300 р.', 150, 101, 8, '#38e858', 'center');
+    else txt('Премия наверху осталась...', 150, 101, 7, '#8a8a9a', 'center');
+    if (b.t > 0.8 && Math.floor(tTitle * 2.5) % 2 === 0) txt(goKey() + ' — выйти', 150, 134, 8, '#f0f0f0', 'center');
+  }
 }
 
 const SKY = ['#182848', '#1c2c54', '#142040'];
@@ -1157,7 +1396,7 @@ function drawTheme(z, cx) {
       rect(ax + 4, 48, 12, 10, '#38a848'); rect(ax + 14, 42, 12, 16, '#2c58c8'); rect(ax + 22, 38, 4, 4, '#f8d838');
     }
   }
-  if (th.deco !== 'rack') for (let i = i0; i < i1; i++) drawDoor(i * 140 + 92 - cx, th);
+  if (th.deco !== 'rack') for (let i = i0; i < i1; i++) drawDoor(i * 140 + 92 - cx, th, !!(secret && !secret.used && secret.i === i));
 
   // пол
   rect(0, FLOOR, W, H - FLOOR, th.floor);
@@ -1251,11 +1490,7 @@ function drawEnt(e, cx) {
     }
     case 'coin': {
       if (e.taken) return;
-      const w = [6, 4, 2, 4][Math.floor(tTitle * 6 + e.ph) % 4], ox = sx + (6 - w) / 2;   // вращение монеты
-      rect(ox, e.y, w, 6, '#101020');
-      if (w > 2) { rect(ox + 1, e.y + 1, w - 2, 4, '#f8d838'); rect(ox + 1, e.y + 1, 1, 1, '#f0f0f0'); }
-      else rect(ox, e.y + 1, 2, 4, '#d8a838');
-      if (w === 6) rect(sx + 2, e.y + 2, 2, 2, '#d8a838');
+      drawCoinAt(sx, e.y, e.ph);
       break;
     }
     default:
@@ -1314,7 +1549,10 @@ function drawShots(cx) {
         rect(sx - 1, FLOOR - 1, 10, 2, Math.floor(s.warn * 10) % 2 ? '#d83830' : '#f8d838');
         txt('!', sx + 4, FLOOR - 13, 8, '#d83830', 'center');
       } else spr(SPR.calc, sx, s.y);
-    } else spr(SPR[s.t], sx, s.y);
+    } else {
+      spr(SPR[s.t], sx, s.y);
+      if (s.mid && Math.floor(tTitle * 5) % 2 === 0) txt('↓', sx + s.w / 2, s.y - 9, 8, '#f8d838', 'center');   // подсказка: под ним — подкат
+    }
   }
 }
 
@@ -1360,7 +1598,7 @@ function drawHUD() {
   rect(bx + 1, 7, Math.round((bw - 2) * pr), 2, '#38a848');
   rect(bx + Math.round((bw - 4) * pr), 4, 3, 7, '#f8d838');
   rect(bx + bw + 1, 3, 2, 9, '#68b8f8');
-  txt('АВАНС ' + coinsGot * 10 + 'р  ПРЕМИЯ ' + bonusGot + '/3', 296, 17, 6, bonusGot === 3 ? '#38e858' : '#f8d838', 'right');
+  txt('АВАНС ' + coinsGot * 10 + 'р  ПРЕМИЯ ' + bonusGot + '/4', 296, 17, 6, bonusGot === 4 ? '#38e858' : '#f8d838', 'right');   // 3 на этаже + 1 в секретной комнате
   // эффекты
   let ey = 19;
   if (p.boost > 0)  { spr(SPR.energy, 5, ey); txt(p.boost.toFixed(1), 13, ey + 1, 7, '#68b8f8'); ey += 12; }
@@ -1377,10 +1615,10 @@ function drawTitle() {
   txt('а в конце каждого этажа — босс:', 150, 83, 7, '#f0f0f0', 'center');
   txt('прыгай ему на голову, чтобы победить!', 150, 92, 7, '#f8d838', 'center');
   if (touchUI()) {
-    txt('ВЕДИ ПАЛЕЦ ← →  — бег', 150, 105, 7, '#68b8f8', 'center');
-    txt('ТАП или ВЗМАХ ↑  — прыжок (и по диагонали)', 150, 114, 7, '#68b8f8', 'center');
-    txt('ВЗМАХ ↓  — подкат', 150, 123, 7, '#68b8f8', 'center');
-    txt('Можно одним пальцем или двумя', 150, 133, 7, '#8a8a9a', 'center');
+    txt('◀ ▶ слева  — бег', 150, 105, 7, '#68b8f8', 'center');
+    txt('▲ справа  — прыжок (держи — выше)', 150, 114, 7, '#68b8f8', 'center');
+    txt('▼  — подкат', 150, 123, 7, '#68b8f8', 'center');
+    txt('Можно жать несколько кнопок сразу', 150, 133, 7, '#8a8a9a', 'center');
   } else {
     txt('← →  или  A D  — бежать', 150, 105, 7, '#68b8f8', 'center');
     txt('ПРОБЕЛ / ↑ / W  — прыжок', 150, 114, 7, '#68b8f8', 'center');
@@ -1401,7 +1639,7 @@ function drawEnd() {
     txt('Время: ' + Math.ceil(timeLeft) + ' с  → +' + Math.round(timeLeft * 10), 150, 49, 7, '#f0f0f0', 'center');
     txt('Жизни: ' + lives + '  → +' + lives * 100, 150, 58, 7, '#f0f0f0', 'center');
     txt('Аванс: ' + coinsGot + ' монет  → +' + coinsGot * 10, 150, 67, 7, '#f8d838', 'center');
-    txt('Премия: ' + bonusGot + '/3  → +' + bonusGot * 300, 150, 76, 7, bonusGot === 3 ? '#38e858' : '#f0f0f0', 'center');
+    txt('Премия: ' + bonusGot + '/4  → +' + bonusGot * 300, 150, 76, 7, bonusGot === 4 ? '#38e858' : '#f0f0f0', 'center');
     txt('Босс повержен  → +500', 150, 85, 7, '#d83830', 'center');
     txt('За этаж: ' + floorScore + ' р.', 150, 97, 8, '#f0f0f0', 'center');
     txt('ЗАРПЛАТА: ' + total, 150, 108, 11, '#f8d838', 'center');
@@ -1422,6 +1660,7 @@ function drawEnd() {
 }
 
 function render() {
+  updatePad();
   ctx.setTransform(SCALE, 0, 0, SCALE, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
@@ -1435,6 +1674,8 @@ function render() {
     return;
   }
 
+  if (bonus) { renderBonus(); return; }
+
   const cx = Math.round(cam);
   let sx = 0, sy = 0;
   if (shake > 0) { sx = Math.round((Math.random() - 0.5) * 3); sy = Math.round((Math.random() - 0.5) * 3); }
@@ -1445,6 +1686,7 @@ function render() {
   drawPuddles(cx);
   drawLift(cx, open);
   ents.forEach(e => drawEnt(e, cx));
+  drawSecretRing(cx);
   drawBoss(cx);
   drawShots(cx);
   interns.forEach(s => drawIntern(s, cx));
@@ -1509,6 +1751,7 @@ window.__game = {
   get papers() { return papers; }, get interns() { return interns; }, get total() { return total; },
   get fight() { return fight; }, get shots() { return shots; }, get folders() { return folders; }, get bossDead() { return bossDead; },
   setFloor: n => { floorNo = n; startFloor(); },
+  get secret() { return secret; }, get bonus() { return bonus; }, enterBonus: () => enterBonus(),
   start: startRun, next: nextFloor,
   teleport: x => { p.x = x; cam = Math.max(0, Math.min(WORLD - W, x - 110)); },
   event: k => { ev = { k, t: 0, dur: 6, beat: -1 }; },
