@@ -3,10 +3,12 @@
 <head>
 <meta charset="utf-8">
 <title>Побег из бюрократии</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 8 8'%3E%3Crect width='8' height='8' fill='%232b3252'/%3E%3Crect x='2' y='1' width='4' height='3' fill='%23f8c8a0'/%3E%3Crect x='2' y='4' width='4' height='3' fill='%23f0f0f0'/%3E%3Crect x='3.5' y='4' width='1' height='3' fill='%23d83830'/%3E%3C/svg%3E">
 <style>
-  html, body { margin: 0; height: 100%; background: #0b0b10; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #0b0b10; overflow: hidden;
+    touch-action: none; overscroll-behavior: none; -webkit-user-select: none; user-select: none;
+    -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   body { display: flex; align-items: center; justify-content: center; }
   .tv {
     position: relative; padding: 28px 28px 46px; border-radius: 52px;
@@ -31,6 +33,20 @@
   }
   .led { position: absolute; right: 44px; bottom: 16px; width: 10px; height: 10px; border-radius: 50%;
     background: #3ae06a; box-shadow: 0 0 8px #3ae06a; }
+  /* маленький экран (телефон в горизонтальном положении): тонкая рамка, чтобы игра была крупнее */
+  @media (max-height: 520px) {
+    .tv { padding: 8px; border-radius: 22px; }
+    .screen { border-radius: 14px; }
+    .brand, .led { display: none; }
+  }
+  /* телефон в вертикальном положении: просим повернуть */
+  .rotate { display: none; position: fixed; inset: 0; z-index: 10; background: #0b0b10; color: #f8d838;
+    font: bold 20px "Courier New", monospace; text-align: center; align-items: center; justify-content: center;
+    padding: 24px; line-height: 1.5; }
+  @media (orientation: portrait) and (pointer: coarse) {
+    .rotate { display: flex; }
+    .tv { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -38,6 +54,7 @@
   <div class="screen"><canvas id="c" width="900" height="600"></canvas></div>
   <div class="brand">HORIZONT</div><div class="led"></div>
 </div>
+<div class="rotate">ПОВЕРНИ ТЕЛЕФОН<br>ГОРИЗОНТАЛЬНО</div>
 
 <script>
 (() => {
@@ -319,10 +336,25 @@ const THEMES = [
 const zoneOf = x => Math.max(0, Math.min(3, Math.floor(x / ZW)));
 
 // ---------- Звук (Web Audio, всё синтезируется) ----------
-let AC = null, muted = false;
+let AC = null, muted = false, bus = null, lowpass = null, muffled = false, noiseBuf = null;
 function ensureAudio() {
-  if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { AC = null; } }
+  if (!AC) {
+    try {
+      AC = new (window.AudioContext || window.webkitAudioContext)();
+      // весь звук идёт через общую шину с фильтром: в наушниках фильтр «глушит» звук
+      bus = AC.createGain(); lowpass = AC.createBiquadFilter();
+      lowpass.type = 'lowpass'; lowpass.frequency.value = 20000; lowpass.Q.value = 0.7;
+      bus.connect(lowpass); lowpass.connect(AC.destination);
+    } catch (e) { AC = null; }
+  }
   if (AC && AC.state === 'suspended') AC.resume();
+}
+function setMuffle(on) {                       // плавно приглушает/возвращает весь звук
+  if (!AC || on === muffled) return;
+  muffled = on;
+  const t = AC.currentTime;
+  lowpass.frequency.setTargetAtTime(on ? 550 : 20000, t, 0.06);
+  bus.gain.setTargetAtTime(on ? 0.75 : 1, t, 0.06);
 }
 function tone(f, d, type, vol, endF, delay) {
   if (!AC || muted) return;
@@ -333,8 +365,21 @@ function tone(f, d, type, vol, endF, delay) {
   if (endF) o.frequency.exponentialRampToValueAtTime(Math.max(20, endF), t + d);
   g.gain.setValueAtTime(vol || 0.06, t);
   g.gain.exponentialRampToValueAtTime(0.0001, t + d);
-  o.connect(g); g.connect(AC.destination);
+  o.connect(g); g.connect(bus);
   o.start(t); o.stop(t + d + 0.02);
+}
+function noise(d, vol) {                       // короткий шум: малый барабан и хай-хэт в теме босса
+  if (!AC || muted) return;
+  if (!noiseBuf) {
+    noiseBuf = AC.createBuffer(1, Math.floor(AC.sampleRate * 0.3), AC.sampleRate);
+    const a = noiseBuf.getChannelData(0);
+    for (let i = 0; i < a.length; i++) a[i] = Math.random() * 2 - 1;
+  }
+  const t = AC.currentTime, s = AC.createBufferSource(), g = AC.createGain();
+  s.buffer = noiseBuf;
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+  s.connect(g); g.connect(bus);
+  s.start(t); s.stop(t + d + 0.02);
 }
 const SFX = {
   jump:   () => tone(280, 0.16, 'square', 0.05, 700),
@@ -353,21 +398,52 @@ const SFX = {
   start:  () => [392, 523, 659].forEach((f, i) => tone(f, 0.1, 'square', 0.05, 0, i * 0.08)),
   stomp:  () => { tone(120, 0.2, 'square', 0.09, 500); tone(90, 0.25, 'sawtooth', 0.06, 40, 0.05); },
   intro:  () => [196, 196, 233, 196, 155].forEach((f, i) => tone(f, 0.28, 'sawtooth', 0.07, 0, i * 0.24)),
-  boom:   () => tone(150, 0.7, 'sawtooth', 0.09, 30)
+  boom:   () => tone(150, 0.7, 'sawtooth', 0.09, 30),
+  // пончик: быстрые восходящие арпеджио, как у грибка в Супер Марио
+  donut:  () => [60, 64, 67, 72, 76, 79, 62, 66, 69, 74, 78, 81, 64, 68, 71, 76, 80, 83]
+                  .forEach((n, i) => tone(mtof(n), 0.07, 'square', 0.045, 0, i * 0.045))
 };
 const mtof = n => 440 * Math.pow(2, (n - 69) / 12);
-const MEL  = [76,0,79,0,83,0,79,0, 81,0,83,81,79,0,76,0, 74,0,77,0,81,0,77,0, 79,0,81,79,76,0,72,0];
-const BASS = [40,0,40,0,47,0,47,0, 45,0,45,0,43,0,43,0, 38,0,38,0,45,0,45,0, 43,0,43,0,40,0,40,0];
-let musicT = 0, musicStep = 0;
-function musicTick(dt, loud) {
+// Мелодии (ноты MIDI, 0 — пауза): по одной на этаж и зловещая тема босса
+const TRACKS = [
+  { name: 'этаж 1: бодрый мажор', step: 0.15, lt: 'square', lv: 0.016, bt: 'triangle', bv: 0.04,
+    lead: [72,0,76,0,79,0,76,0,  74,0,77,0,81,0,77,0,  72,0,76,79,84,0,79,0,  77,0,74,0,71,0,67,0],
+    bass: [48,0,48,55,0,48,0,55,  53,0,53,60,0,53,0,60,  48,0,48,55,0,48,0,55,  55,0,55,62,0,55,0,43] },
+  { name: 'этаж 2: тревожный минор', step: 0.14, lt: 'square', lv: 0.016, bt: 'triangle', bv: 0.04,
+    lead: [69,0,72,0,76,0,72,0,  71,0,74,0,77,0,74,0,  69,72,76,0,81,0,76,72,  68,0,71,0,74,0,71,0],
+    bass: [45,0,45,52,0,45,0,52,  43,0,43,50,0,43,0,50,  41,0,41,48,0,41,0,48,  40,0,40,47,0,40,44,0] },
+  { name: 'этаж 3: быстрые арпеджио', step: 0.12, lt: 'square', lv: 0.015, bt: 'triangle', bv: 0.045,
+    lead: [76,79,83,79,76,79,83,79,  74,77,81,77,74,77,81,77,  72,76,79,76,72,76,79,76,  71,74,79,74,71,74,78,74],
+    bass: [40,0,52,0,40,0,52,0,  38,0,50,0,38,0,50,0,  36,0,48,0,36,0,48,0,  35,0,47,0,35,0,47,0] },
+  { name: 'босс: зловещая тема', step: 0.14, lt: 'sawtooth', lv: 0.02, bt: 'sawtooth', bv: 0.045, drums: true,
+    lead: [62,0,0,65,0,0,68,0,  63,0,0,66,0,0,69,0,  62,0,0,65,0,0,68,0,  68,0,67,0,66,0,65,0],
+    bass: [38,0,38,38,0,38,0,38,  39,0,39,39,0,39,0,39,  38,0,38,38,0,38,0,38,  44,0,44,44,0,44,0,44] }
+];
+const BOSS_TRACK = 3;
+let musicT = 0, musicStep = 0, musicTrack = -1;
+function musicTick(dt, ti) {
+  if (ti === null) return;
+  if (ti !== musicTrack) { musicTrack = ti; musicStep = 0; musicT = 0; }     // сменилась мелодия — начинаем с начала
+  const T = TRACKS[ti];
   musicT += dt;
-  while (musicT >= 0.16) {
-    musicT -= 0.16;
-    const m = MEL[musicStep % MEL.length], b = BASS[musicStep % BASS.length];
-    if (m) tone(mtof(m), 0.14, 'square', loud ? 0.04 : 0.014);
-    if (b) tone(mtof(b), 0.18, 'triangle', loud ? 0.07 : 0.035);
+  while (musicT >= T.step) {
+    musicT -= T.step;
+    const m = T.lead[musicStep % T.lead.length], b = T.bass[musicStep % T.bass.length];
+    if (m) tone(mtof(m), T.step * 0.9, T.lt, T.lv);
+    if (b) tone(mtof(b), T.step * 1.2, T.bt, T.bv);
+    if (T.drums) {                                       // ударные босса: бочка, малый барабан, хай-хэт
+      if (musicStep % 4 === 0) tone(130, 0.12, 'sine', 0.11, 45);
+      if (musicStep % 8 === 4) noise(0.12, 0.05);
+      if (musicStep % 2 === 1) noise(0.04, 0.018);
+    }
     musicStep++;
   }
+}
+function trackFor() {                                    // какая мелодия должна играть сейчас
+  const ph = fight.phase;
+  if (ph === 'intro' || ph === 'fight') return BOSS_TRACK;
+  if (ph === 'dying') return null;                       // в момент победы музыка замолкает
+  return Math.min(floorNo, 3) - 1;
 }
 
 // ---------- Ввод ----------
@@ -397,6 +473,60 @@ function onPress(code) {
     if (DOWN.includes(code)) p.slideBuf = 0.12;
   }
 }
+
+// ---------- Управление касаниями (без нарисованных кнопок) ----------
+// Левая часть экрана: ведёшь палец влево/вправо — герой бежит (невидимый джойстик).
+// Правая часть: тап или свайп вверх — прыжок, свайп вниз — подкат.
+// На заставке, экране битвы и итогах любое касание работает как Enter.
+let usedTouch = false;
+const isTouch = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+const touchUI = () => usedTouch || isTouch;
+const goKey = () => touchUI() ? 'ТАП' : 'ENTER';
+const SWIPE = 22, DEAD = 12, TAP = 14, STICK = 30;    // пороги в пикселях экрана
+const pointers = new Map();
+const screenEl = document.querySelector('.screen');
+const act = code => { if (state === 'play' && fight.phase !== 'intro') onPress(code); };   // жесты работают только в игре
+
+screenEl.addEventListener('pointerdown', e => {
+  e.preventDefault(); ensureAudio();
+  if (e.pointerType !== 'mouse') usedTouch = true;
+  try { screenEl.setPointerCapture(e.pointerId); } catch (_) {}
+  if (state !== 'play' || fight.phase === 'intro') { onPress('Enter'); return; }
+  const r = screenEl.getBoundingClientRect();
+  const role = (e.clientX - r.left) / r.width < 0.45 ? 'move' : 'act';
+  pointers.set(e.pointerId, { role, x0: e.clientX, y0: e.clientY, done: false });
+}, { passive: false });
+
+screenEl.addEventListener('pointermove', e => {
+  const q = pointers.get(e.pointerId);
+  if (!q) return;
+  e.preventDefault();
+  let dx = e.clientX - q.x0;
+  const dy = e.clientY - q.y0;
+  if (q.role === 'move') {
+    // «плавающий» центр джойстика: чтобы развернуться, не нужно вести палец через весь экран
+    if (dx > STICK) { q.x0 = e.clientX - STICK; dx = STICK; }
+    else if (dx < -STICK) { q.x0 = e.clientX + STICK; dx = -STICK; }
+    keys.TouchLeft = dx < -DEAD; keys.TouchRight = dx > DEAD;
+  } else if (!q.done) {
+    if (dy < -SWIPE) { q.done = true; keys.TouchJump = true; act('Space'); }      // свайп вверх — прыжок (держишь — выше)
+    else if (dy > SWIPE) { q.done = true; act('ArrowDown'); }                      // свайп вниз — подкат
+  }
+}, { passive: false });
+
+function endPointer(e) {
+  const q = pointers.get(e.pointerId);
+  if (!q) return;
+  pointers.delete(e.pointerId);
+  if (q.role === 'move') { keys.TouchLeft = false; keys.TouchRight = false; return; }
+  if (!q.done && Math.hypot(e.clientX - q.x0, e.clientY - q.y0) < TAP) {          // короткий тап — полный прыжок
+    act('Space'); keys.TouchJump = true;
+    setTimeout(() => { keys.TouchJump = false; }, 350);
+  } else keys.TouchJump = false;
+}
+screenEl.addEventListener('pointerup', e => { ensureAudio(); endPointer(e); });
+screenEl.addEventListener('pointercancel', endPointer);
+screenEl.addEventListener('contextmenu', e => e.preventDefault());
 
 // ---------- Состояние ----------
 function mulberry(a) {
@@ -681,20 +811,21 @@ function updateFight(dt, pb) {
 // ---------- Обновление ----------
 function update(dt) {
   tTitle += dt;
+  setMuffle(state === 'play' && !!p && p.phones > 0);      // в наушниках весь звук приглушён
   if (state === 'win' || state === 'lose') { endT += dt; shake = Math.max(0, shake - dt); updateParticles(dt); return; }
   if (state !== 'play' || paused) return;
 
   // выход на арену: игра замирает, показывается экран битвы с боссом
   if (fight.phase === 'wait' && p.x >= ARENA_X) enterArena();
-  if (fight.phase === 'intro') { fight.t += dt; updateParticles(dt); if (fight.t > 3.5) startFight(); return; }
+  if (fight.phase === 'intro') { fight.t += dt; updateParticles(dt); musicTick(dt, BOSS_TRACK); if (fight.t > 3.5) startFight(); return; }
 
   if (fight.phase === 'wait') {      // с момента встречи с боссом время стоит до конца этажа
     timeLeft -= dt;
     if (timeLeft <= 0) { timeLeft = 0; endGame(false, 'Рабочий день закончился!'); return; }
   }
 
-  const L = keys.ArrowLeft || keys.KeyA, R = keys.ArrowRight || keys.KeyD;
-  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW;
+  const L = keys.ArrowLeft || keys.KeyA || keys.TouchLeft, R = keys.ArrowRight || keys.KeyD || keys.TouchRight;
+  const jumpHeld = keys.Space || keys.ArrowUp || keys.KeyW || keys.TouchJump;
   const maxV = p.boost > 0 ? 130 : 85;
   const onPuddle = p.onGround && (floodT > 0 || puddles.some(q => p.x + 4 > q.x0 && p.x + 4 < q.x1));
 
@@ -842,7 +973,7 @@ function update(dt) {
           else {
             if (lives < MAX_LIVES) { lives++; floater(p.x, p.y - 22, '+1', '#f890b8'); }
             else { timeLeft += 5; floater(p.x, p.y - 22, '+5с', '#f890b8'); }
-            burst(cx, cy, 10, ['#f890b8', '#f8d838'], 60, 0); SFX.pick();
+            burst(cx, cy, 10, ['#f890b8', '#f8d838'], 60, 0); SFX.donut();
           }
         }
     }
@@ -907,7 +1038,7 @@ function update(dt) {
   floaters = floaters.filter(f => f.t < 1.1);
   updateParticles(dt);
 
-  musicTick(dt, p.phones > 0);
+  musicTick(dt, trackFor());
 
   // лифт открывается только после победы над боссом
   if (bossDead && p.x + 4 >= GOAL + 12) endGame(true);
@@ -1186,7 +1317,7 @@ function drawBossIntro() {
   txt(d.name, 150, 108, 9, d.col, 'center');
   txt('«' + d.quote + '»', 150, 121, 7, '#f0f0f0', 'center');
   txt('Прыгни боссу на голову: ' + d.hp + (d.hp < 5 ? ' раза!' : ' раз!'), 150, 134, 7, '#68b8f8', 'center');
-  if (fight.t > 0.9 && Math.floor(tTitle * 2.5) % 2 === 0) txt('ENTER — в бой', 150, 153, 8, '#f0f0f0', 'center');
+  if (fight.t > 0.9 && Math.floor(tTitle * 2.5) % 2 === 0) txt(goKey() + ' — в бой', 150, 153, 8, '#f0f0f0', 'center');
 }
 
 function drawIntern(s, cx) {
@@ -1233,11 +1364,17 @@ function drawTitle() {
   txt('3 этажа до свободы. Собирай аванс и премии,', 150, 74, 7, '#f0f0f0', 'center');
   txt('а в конце каждого этажа — босс:', 150, 83, 7, '#f0f0f0', 'center');
   txt('прыгай ему на голову, чтобы победить!', 150, 92, 7, '#f8d838', 'center');
-  txt('← →  или  A D  — бежать', 150, 105, 7, '#68b8f8', 'center');
-  txt('ПРОБЕЛ / ↑ / W  — прыжок', 150, 114, 7, '#68b8f8', 'center');
-  txt('↓ / S  — подкат (под воздуховоды)', 150, 123, 7, '#68b8f8', 'center');
-  txt('P — пауза     M — звук', 150, 133, 7, '#8a8a9a', 'center');
-  if (Math.floor(tTitle * 2.5) % 2 === 0) txt('НАЖМИ  ENTER', 150, 146, 10, '#f0f0f0', 'center');
+  if (touchUI()) {
+    txt('СЛЕВА: веди пальцем ← →  — бег', 150, 105, 7, '#68b8f8', 'center');
+    txt('СПРАВА: тап или свайп ↑  — прыжок', 150, 114, 7, '#68b8f8', 'center');
+    txt('СПРАВА: свайп ↓  — подкат', 150, 123, 7, '#68b8f8', 'center');
+  } else {
+    txt('← →  или  A D  — бежать', 150, 105, 7, '#68b8f8', 'center');
+    txt('ПРОБЕЛ / ↑ / W  — прыжок', 150, 114, 7, '#68b8f8', 'center');
+    txt('↓ / S  — подкат (под воздуховоды)', 150, 123, 7, '#68b8f8', 'center');
+    txt('P — пауза     M — звук', 150, 133, 7, '#8a8a9a', 'center');
+  }
+  if (Math.floor(tTitle * 2.5) % 2 === 0) txt(touchUI() ? 'КОСНИСЬ ЭКРАНА' : 'НАЖМИ  ENTER', 150, 146, 10, '#f0f0f0', 'center');
   if (best) txt('Рекорд: ' + best, 150, 162, 6, '#f890b8', 'center');
 }
 
@@ -1257,7 +1394,7 @@ function drawEnd() {
     txt('ЗАРПЛАТА: ' + total, 150, 108, 11, '#f8d838', 'center');
     txt('Звание: ' + rankOf(total), 150, 123, 8, '#f890b8', 'center');
     txt('Рекорд: ' + best, 150, 134, 6, '#8a8a9a', 'center');
-    if (blink) txt(fin ? 'ENTER — играть снова' : 'ENTER — этаж ' + (floorNo + 1) + ' (сложнее!)', 150, 150, 8, '#f0f0f0', 'center');
+    if (blink) txt(fin ? goKey() + ' — играть снова' : goKey() + ' — этаж ' + (floorNo + 1) + ' (сложнее!)', 150, 150, 8, '#f0f0f0', 'center');
   } else {
     panel(26, 148);
     txt('УВОЛЕН!', 150, 33, 18, '#d83830', 'center');
@@ -1267,7 +1404,7 @@ function drawEnd() {
     txt('ЗАРПЛАТА: ' + total, 150, 98, 11, '#f8d838', 'center');
     txt('Звание: ' + rankOf(total), 150, 114, 8, '#f890b8', 'center');
     txt('Рекорд: ' + best, 150, 126, 6, '#8a8a9a', 'center');
-    if (blink) txt('ENTER — начать заново', 150, 142, 9, '#f0f0f0', 'center');
+    if (blink) txt(goKey() + ' — начать заново', 150, 142, 9, '#f0f0f0', 'center');
   }
 }
 
